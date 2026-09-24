@@ -867,7 +867,10 @@ public class MainController {
         // que ficou fora dela.
         Terrain3DView.show(mainWindow(), elevation, np, r, outroPonto, outroRadio,
                 coberturas.isEmpty() ? null : coberturas, project.getBasemap(),
-                mapPane.currentImages(), project.getImages(), mapPane.surveyRings());
+                mapPane.currentImages(), project.getImages(), mapPane.surveyRings(),
+                com.colmeia.radiomapper.rf.BeamReach.de(r, simuladoDoRadio(r)).metros(),
+                com.colmeia.radiomapper.rf.BeamReach.de(
+                        outroRadio, simuladoDoRadio(outroRadio)).metros());
     }
 
     private static String nomeDoRadio(Radio r) {

@@ -165,7 +165,8 @@ public final class Terrain3DView {
                             List<Cobertura> coberturas, TileSource base,
                             List<Image> ortos,
                             List<com.colmeia.radiomapper.model.ImageLayer> camadas) {
-        show(owner, elevation, a, radioA, b, radioB, coberturas, base, ortos, camadas, null);
+        show(owner, elevation, a, radioA, b, radioB, coberturas, base, ortos, camadas,
+             null, 0, 0);
     }
 
     /**
@@ -182,6 +183,26 @@ public final class Terrain3DView {
                             List<Image> ortos,
                             List<com.colmeia.radiomapper.model.ImageLayer> camadas,
                             List<double[]> contornoNuvem) {
+        show(owner, elevation, a, radioA, b, radioB, coberturas, base, ortos, camadas,
+             contornoNuvem, 0, 0);
+    }
+
+    /**
+     * @param alcanceA at\u00e9 onde levar o feixe 3D do r\u00e1dio A, em metros
+     *                 de ch\u00e3o. Vem de fora porque quem sabe conciliar
+     *                 cadastro, varredura e or\u00e7amento \u00e9 o controller
+     *                 \u2014 e desenhar um cone de 900 m onde o relevo corta em
+     *                 48 seria pior que n\u00e3o desenhar. 0 = sem feixe.
+     * @param alcanceB o mesmo, para o r\u00e1dio B
+     */
+    public static void show(Window owner, ElevationChain elevation,
+                            NetworkPoint a, Radio radioA,
+                            NetworkPoint b, Radio radioB,
+                            List<Cobertura> coberturas, TileSource base,
+                            List<Image> ortos,
+                            List<com.colmeia.radiomapper.model.ImageLayer> camadas,
+                            List<double[]> contornoNuvem,
+                            double alcanceA, double alcanceB) {
 
         if (a == null) return;
 
@@ -283,7 +304,8 @@ public final class Terrain3DView {
                 return;
             }
             montar(stage, raiz, alt, LADO, fMinX, fMinY, fMaxX, fMaxY, a, radioA, b, radioB,
-                   coberturas, imagem[0], contornoNuvem, qual, vista, refazer);
+                   coberturas, imagem[0], contornoNuvem, qual, vista, refazer,
+                   alcanceA, alcanceB);
         });
         amostrar.setOnFailed(e -> {
             Throwable ex = amostrar.getException();
@@ -305,7 +327,8 @@ public final class Terrain3DView {
                                NetworkPoint a, Radio radioA, NetworkPoint b, Radio radioB,
                                List<Cobertura> coberturas, WritableImage foto,
                                List<double[]> contornoNuvem,
-                               Qualidade[] qual, double[] vista, Runnable[] refazer) {
+                               Qualidade[] qual, double[] vista, Runnable[] refazer,
+                               double alcanceA, double alcanceB) {
 
         double k = Mercator.groundScaleAt(Mercator.latOfWorldY((minY + maxY) / 2));
         double larguraM = (maxX - minX) * k;
@@ -451,6 +474,33 @@ public final class Terrain3DView {
                 + "Isto muda s\u00f3 o desenho \u2014 o c\u00e1lculo de obstru\u00e7\u00e3o "
                 + "e de alcance continua usando a superf\u00edcie inteira."));
 
+        // O cone que sai da antena. Separado da linha do enlace: a linha
+        // liga duas pontas, o cone mostra por onde o sinal sai de UMA.
+        boolean temFeixe = (radioA != null && alcanceA > 0)
+                || (radioB != null && alcanceB > 0);
+        CheckBox mostrarFeixe = new CheckBox("Feixe em 3D");
+        mostrarFeixe.setStyle("-fx-text-fill: #ddd;");
+        mostrarFeixe.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+        mostrarFeixe.setDisable(!temFeixe);
+        StringBuilder quanto = new StringBuilder();
+        if (radioA != null && alcanceA > 0) {
+            quanto.append(a.getName()).append(": ")
+                  .append(MapPane.formatRange(alcanceA));
+        }
+        if (radioB != null && alcanceB > 0) {
+            if (quanto.length() > 0) quanto.append("   ·   ");
+            quanto.append(b.getName()).append(": ")
+                  .append(MapPane.formatRange(alcanceB));
+        }
+        mostrarFeixe.setTooltip(new javafx.scene.control.Tooltip(temFeixe
+                ? "Cone saindo da ponta da antena, com a abertura vertical e a "
+                  + "inclinação cadastradas.\n" + quanto
+                  + "\n\nA vertical do cone é esticada junto com a do terreno: "
+                  + "sem isso ele apontaria para um morro que, na tela, está "
+                  + "noutro lugar."
+                : "Sem alcance para desenhar: informe o alcance no cadastro, ou "
+                  + "rode Alcance para o programa apurar."));
+
         CheckBox mostrarLinha = new CheckBox("Linha do enlace");
         mostrarLinha.setSelected(b != null);
         mostrarLinha.setDisable(b == null);
@@ -490,6 +540,7 @@ public final class Terrain3DView {
 
             conteudo.getChildren().removeIf(n -> n != terreno);
             List<Node> novos = torres(alt, lado, minX, minY, maxX, maxY,
+                    mostrarFeixe.isSelected(), alcanceA, alcanceB,
                     larguraM, profundM, baseH, ex,
                     escalaSimbolo, a, radioA, b, radioB, mostrarLinha.isSelected());
             conteudo.getChildren().addAll(novos);
@@ -634,10 +685,12 @@ public final class Terrain3DView {
         qualidade.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
         semMato.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
 
+        mostrarFeixe.selectedProperty().addListener((o, x, y) -> reconstruir.run());
+
         javafx.scene.layout.FlowPane barra = new javafx.scene.layout.FlowPane(10, 6,
                 rotQualidade, qualidade,
                 new Separator(javafx.geometry.Orientation.VERTICAL),
-                rotExagero, exagero, exageroTxt, semMato, mostrarLinha,
+                rotExagero, exagero, exageroTxt, semMato, mostrarFeixe, mostrarLinha,
                 new Separator(javafx.geometry.Orientation.VERTICAL),
                 bDeCima, bInclinada, bEnquadrar, dica);
         barra.setAlignment(Pos.CENTER_LEFT);
@@ -1707,10 +1760,157 @@ public final class Terrain3DView {
         return img;
     }
 
+    /**
+     * O feixe saindo da ponta da antena, como volume.
+     *
+     * <h3>O que isto mostra que o resto não mostra</h3>
+     * A cobertura pintada no terreno responde "chega aqui?" — mas é uma mancha
+     * no chão, e não diz por onde o sinal passou. Um cone saindo da antena diz
+     * a outra metade: a abertura vertical, a inclinação, e se o feixe está
+     * passando por cima do morro ou entrando nele. É a diferença entre ver a
+     * sombra e ver o que a produz.
+     *
+     * <h3>O exagero vertical entra aqui também</h3>
+     * O terreno é desenhado com a vertical esticada. Um cone com geometria
+     * verdadeira ficaria fino demais e passaria longe de onde o relevo está
+     * desenhado — apontaria para um morro que, na tela, está noutro lugar.
+     * Por isso a componente vertical do cone é esticada pelo mesmo fator: o
+     * desenho deixa de ser um cone de verdade e passa a ser o cone NESTE
+     * espaço, que é o que permite comparar com o terreno ao lado.
+     *
+     * @param alcanceM até onde levar o feixe, em metros de chão
+     */
+    private static Node feixe3D(Point3D apice, Radio r, double alcanceM,
+                                double exagero, Color cor) {
+        if (apice == null || r == null || alcanceM <= 0) return null;
+
+        double larguraH = r.getBeamWidthDeg();
+        double larguraV = r.getBeamVerticalWidthDeg();
+        // Sem plano vertical cadastrado nao da para afirmar a abertura; um
+        // palpite modesto e' melhor que uma lamina de espessura zero, que
+        // sumiria na tela e pareceria que nao ha feixe.
+        if (larguraV <= 0) larguraV = 10;
+
+        boolean omni = larguraH <= 0 || larguraH >= 360;
+        double az = Math.toRadians(r.getBeamAzimuthDeg());
+        double tilt = Math.toRadians(r.getBeamTiltDeg());
+        double meiaV = Math.toRadians(Math.min(85, larguraV / 2));
+
+        TriangleMesh m = new TriangleMesh();
+        int N = 48;
+
+        if (omni) {
+            // Omni: o feixe e' uma saia em volta da torre, entre as duas
+            // elevacoes da abertura vertical. Cone nao serve — nao ha direcao
+            // privilegiada para apontar.
+            float[] pts = new float[(2 * N + 1) * 3];
+            for (int k = 0; k < N; k++) {
+                double a = 2 * Math.PI * k / N;
+                pontoDoFeixe(pts, k, apice, a, tilt + meiaV, alcanceM, exagero);
+                pontoDoFeixe(pts, N + k, apice, a, tilt - meiaV, alcanceM, exagero);
+            }
+            pts[2 * N * 3] = (float) apice.getX();
+            pts[2 * N * 3 + 1] = (float) apice.getY();
+            pts[2 * N * 3 + 2] = (float) apice.getZ();
+
+            // So a FAIXA entre as duas elevacoes, sem tampa ligando a torre.
+            //
+            // Fechar o volume ate o apice pareceu a coisa certa e nao e': com
+            // abertura vertical estreita as duas tampas viram dois discos do
+            // tamanho do alcance, e um omni de 1 km cobria a cena inteira com
+            // uma chapa translucida. A faixa sozinha mostra o que interessa --
+            // a que altura o sinal sai e quanto ele abre.
+            int[] faces = new int[N * 2 * 6];
+            int f = 0;
+            for (int k = 0; k < N; k++) {
+                int k2 = (k + 1) % N;
+                f = tri(faces, f, k, N + k, k2);
+                f = tri(faces, f, k2, N + k, N + k2);
+            }
+            m.getPoints().setAll(pts);
+            m.getFaces().setAll(java.util.Arrays.copyOf(faces, f));
+        } else {
+            double meiaH = Math.toRadians(Math.min(85, larguraH / 2));
+            // Eixo do feixe e os dois perpendiculares: um na horizontal, outro
+            // completando o triedro. A borda do cone e' uma elipse nesses dois.
+            double[] u = { Math.sin(az) * Math.cos(tilt), -Math.sin(tilt),
+                           Math.cos(az) * Math.cos(tilt) };
+            double[] h = { Math.cos(az), 0, -Math.sin(az) };
+            double[] v = { u[1] * h[2] - u[2] * h[1],
+                           u[2] * h[0] - u[0] * h[2],
+                           u[0] * h[1] - u[1] * h[0] };
+
+            float[] pts = new float[(N + 1) * 3];
+            pts[0] = (float) apice.getX();
+            pts[1] = (float) apice.getY();
+            pts[2] = (float) apice.getZ();
+            for (int k = 0; k < N; k++) {
+                double a = 2 * Math.PI * k / N;
+                double th = Math.tan(meiaH) * Math.cos(a);
+                double tv = Math.tan(meiaV) * Math.sin(a);
+                double dx = u[0] + th * h[0] + tv * v[0];
+                double dy = u[1] + th * h[1] + tv * v[1];
+                double dz = u[2] + th * h[2] + tv * v[2];
+                double n = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                if (n <= 0) n = 1;
+                pts[(k + 1) * 3] = (float) (apice.getX() + dx / n * alcanceM);
+                pts[(k + 1) * 3 + 1] =
+                        (float) (apice.getY() + dy / n * alcanceM * exagero);
+                pts[(k + 1) * 3 + 2] = (float) (apice.getZ() + dz / n * alcanceM);
+            }
+
+            int[] faces = new int[N * 2 * 6];
+            int f = 0;
+            for (int k = 0; k < N; k++) {
+                int k2 = (k + 1) % N;
+                f = tri(faces, f, 0, k + 1, k2 + 1);        // parede do cone
+                f = tri(faces, f, k2 + 1, k + 1, 0);        // e o outro lado
+            }
+            m.getPoints().setAll(pts);
+            m.getFaces().setAll(java.util.Arrays.copyOf(faces, f));
+        }
+
+        m.getTexCoords().setAll(0, 0);
+
+        MeshView mv = new MeshView(m);
+        // A transparencia vem do ALFA da cor do material, nao de setOpacity():
+        // num no 3D o setOpacity nao surte efeito, e o mapa de auto-iluminacao
+        // -- que e' opaco -- ainda pintava por cima do que houvesse atras. Sem
+        // ele e com alfa baixo, o feixe vira volume e o relevo continua
+        // visivel atraves dele, que e' o ponto de desenhar os dois juntos.
+        PhongMaterial mat = new PhongMaterial(cor.deriveColor(0, 1, 1, 0.16));
+        mat.setSpecularColor(Color.TRANSPARENT);
+        mv.setMaterial(mat);
+        // Sem descartar face: olha-se o feixe de fora e de dentro, e com uma
+        // das faces fora ele desaparece pela metade ao girar a cena. Em troca
+        // as duas paredes se somam na transparencia, e por isso ela e' baixa.
+        mv.setCullFace(javafx.scene.shape.CullFace.NONE);
+        mv.setMouseTransparent(true);
+        return mv;
+    }
+
+    /** Um ponto da borda do feixe, dado o azimute e a elevação. */
+    private static void pontoDoFeixe(float[] pts, int i, Point3D apice,
+                                     double az, double elev, double alcanceM,
+                                     double exagero) {
+        double ce = Math.cos(elev);
+        pts[i * 3] = (float) (apice.getX() + Math.sin(az) * ce * alcanceM);
+        pts[i * 3 + 1] = (float) (apice.getY() - Math.sin(elev) * alcanceM * exagero);
+        pts[i * 3 + 2] = (float) (apice.getZ() + Math.cos(az) * ce * alcanceM);
+    }
+
+    private static int tri(int[] faces, int f, int a, int b, int c) {
+        faces[f++] = a; faces[f++] = 0;
+        faces[f++] = b; faces[f++] = 0;
+        faces[f++] = c; faces[f++] = 0;
+        return f;
+    }
+
     // ------------------------ Torres e enlace ------------------------
 
     private static List<Node> torres(double[] alt, int lado, double minX, double minY,
                                      double maxX, double maxY,
+                                     boolean comFeixe, double alcanceA, double alcanceB,
                                      double larguraM, double profundM, double baseH,
                                      double exagero, double escala,
                                      NetworkPoint a, Radio radioA,
@@ -1722,6 +1922,13 @@ public final class Terrain3DView {
         Point3D topoB = b == null ? null
                 : torre(out, alt, lado, minX, minY, maxX, maxY, larguraM, profundM,
                         baseH, exagero, escala, b, radioB, Color.web("#ffa726"));
+
+        if (comFeixe) {
+            Node fa = feixe3D(topoA, radioA, alcanceA, exagero, Color.web("#29b6f6"));
+            if (fa != null) out.add(fa);
+            Node fb = feixe3D(topoB, radioB, alcanceB, exagero, Color.web("#ffa726"));
+            if (fb != null) out.add(fb);
+        }
 
         if (comLinha && topoA != null && topoB != null) {
             out.add(cilindroEntre(topoA, topoB, escala * LINHA, Color.web("#ffffff")));
