@@ -1,0 +1,33 @@
+# Build
+target/
+*.class
+*.jar
+
+# Argumentos que o NetBeans deixa para trás a cada compilação
+javac.*.args
+
+# Preferências locais de ferramentas
+.claude/
+.idea/
+*.iml
+nbproject/private/
+
+# Projetos de trabalho.
+#
+# Um .rmap guarda caminhos absolutos da máquina de quem o salvou, nomes de
+# sítio e as COORDENADAS dos pontos — dado de cliente. Fora do repositório por
+# padrão; se algum dia fizer sentido publicar um projeto de exemplo, que seja
+# um feito para isso, com coordenadas fictícias.
+*.rmap
+
+# Dados de entrada: nuvens de pontos, ortofotos e relevo são grandes demais
+# para versionar e pertencem a cada levantamento, não ao programa.
+*.ply
+*.tif
+*.tiff
+*.laz
+*.las
+
+# Sistema
+Thumbs.db
+.DS_Store

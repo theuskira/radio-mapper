@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<actions>
+    <!--
+        Ponto de entrada obrigatoriamente Launcher (nao estende Application).
+        Rodar App diretamente falha com "JavaFX runtime components are missing"
+        porque o projeto roda no classpath, sem module-info.
+    -->
+    <action>
+        <actionName>run</actionName>
+        <packagings>
+            <packaging>jar</packaging>
+        </packagings>
+        <goals>
+            <goal>process-classes</goal>
+            <goal>org.codehaus.mojo:exec-maven-plugin:3.1.0:exec</goal>
+        </goals>
+        <properties>
+            <exec.vmArgs></exec.vmArgs>
+            <exec.appArgs></exec.appArgs>
+            <exec.mainClass>com.colmeia.radiomapper.Launcher</exec.mainClass>
+            <exec.executable>${java.home}/bin/java</exec.executable>
+            <exec.args>${exec.vmArgs} -classpath %classpath ${exec.mainClass} ${exec.appArgs}</exec.args>
+        </properties>
+    </action>
+
+    <action>
+        <actionName>debug</actionName>
+        <packagings>
+            <packaging>jar</packaging>
+        </packagings>
+        <goals>
+            <goal>process-classes</goal>
+            <goal>org.codehaus.mojo:exec-maven-plugin:3.1.0:exec</goal>
+        </goals>
+        <properties>
+            <exec.vmArgs>-agentlib:jdwp=transport=dt_socket,server=n,address=${jpda.address}</exec.vmArgs>
+            <exec.appArgs></exec.appArgs>
+            <exec.mainClass>com.colmeia.radiomapper.Launcher</exec.mainClass>
+            <exec.executable>${java.home}/bin/java</exec.executable>
+            <exec.args>${exec.vmArgs} -classpath %classpath ${exec.mainClass} ${exec.appArgs}</exec.args>
+            <jpda.listen>true</jpda.listen>
+        </properties>
+    </action>
+
+    <action>
+        <actionName>profile</actionName>
+        <packagings>
+            <packaging>jar</packaging>
+        </packagings>
+        <goals>
+            <goal>process-classes</goal>
+            <goal>org.codehaus.mojo:exec-maven-plugin:3.1.0:exec</goal>
+        </goals>
+        <properties>
+            <exec.vmArgs></exec.vmArgs>
+            <exec.appArgs></exec.appArgs>
+            <exec.mainClass>com.colmeia.radiomapper.Launcher</exec.mainClass>
+            <exec.executable>${java.home}/bin/java</exec.executable>
+            <exec.args>${exec.vmArgs} -classpath %classpath ${exec.mainClass} ${exec.appArgs}</exec.args>
+        </properties>
+    </action>
+</actions>

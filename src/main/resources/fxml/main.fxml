@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.geometry.Insets?>
+<?import com.colmeia.radiomapper.ui.MapPane?>
+<?import com.colmeia.radiomapper.ui.BeamProfilePane?>
+
+<BorderPane fx:id="root" xmlns="http://javafx.com/javafx/17"
+            xmlns:fx="http://javafx.com/fxml/1"
+            fx:controller="com.colmeia.radiomapper.ui.MainController"
+            prefWidth="1280" prefHeight="800">
+
+    <top>
+        <MenuBar fx:id="menuBar">
+            <menus>
+                <Menu text="_Arquivo">
+                    <items>
+                        <MenuItem text="Novo projeto" onAction="#onNewProject" accelerator="Shortcut+N"/>
+                        <MenuItem text="Carregar projeto..." onAction="#onLoadProject" accelerator="Shortcut+O"/>
+                        <MenuItem text="Salvar projeto..." onAction="#onSaveProject" accelerator="Shortcut+S"/>
+                        <SeparatorMenuItem/>
+                        <MenuItem text="Sair" onAction="#onExit" accelerator="Shortcut+Q"/>
+                    </items>
+                </Menu>
+
+                <Menu text="_Projeto">
+                    <items>
+                        <MenuItem text="Adicionar ponto" onAction="#onAddPoint" accelerator="Shortcut+P"/>
+                        <MenuItem text="Renomear ponto..." onAction="#onRenamePoint"/>
+                        <MenuItem text="Remover ponto" onAction="#onRemovePoint"/>
+                        <SeparatorMenuItem/>
+                        <MenuItem text="Adicionar rádio..." onAction="#onAddRadio" accelerator="Shortcut+R"/>
+                        <MenuItem text="Editar rádio..." onAction="#onEditRadio"/>
+                        <MenuItem text="Remover rádio" onAction="#onRemoveRadio"/>
+                        <SeparatorMenuItem/>
+                        <MenuItem text="Enlaces planejados..." onAction="#onPlannedLinks"/>
+                        <MenuItem text="Simular alcance do rádio..." onAction="#onSimulateBeam"/>
+                    </items>
+                </Menu>
+
+                <Menu text="_Rádios">
+                    <items>
+                        <MenuItem text="Sincronizar agora" onAction="#onSync" accelerator="F5"/>
+                        <CheckMenuItem fx:id="autoSyncMenu" text="Sincronização automática" onAction="#onToggleAuto"/>
+                    </items>
+                </Menu>
+
+                <Menu text="E_xibir">
+                    <items>
+                        <!-- Só AÇÕES aqui. Tipo de mapa, feixes e opções da
+                             sobreposição ficam em Ferramentas > Configurações. -->
+                        <Menu fx:id="imageMenu" text="Imagens de fundo">
+                            <items>
+                                <MenuItem text="Adicionar imagem..." onAction="#onOpenImage" accelerator="Shortcut+I"/>
+                                <SeparatorMenuItem fx:id="imageListStart"/>
+                                <!-- Entre este separador e o proximo, o
+                                     MainController insere uma entrada por
+                                     imagem carregada. -->
+                                <SeparatorMenuItem fx:id="imageListEnd"/>
+                                <CheckMenuItem fx:id="imageAdjustItem" text="Ajustar sobre o mapa" onAction="#onToggleImageAdjust"/>
+                                <MenuItem text="Posicionar pelas coordenadas do GeoTIFF" onAction="#onApplyGeoreference"/>
+                                <MenuItem text="Reencaixar sobre os pontos" onAction="#onResetImagePlacement"/>
+                                <SeparatorMenuItem/>
+                                <MenuItem text="Trazer para a frente" onAction="#onImageToFront"/>
+                                <MenuItem text="Enviar para tr\u00e1s" onAction="#onImageToBack"/>
+                                <SeparatorMenuItem/>
+                                <MenuItem text="Analisar arquivo (foto ou relevo?)..." onAction="#onInspectRaster"/>
+                                <MenuItem text="Remover a imagem ativa" onAction="#onRemoveImage"/>
+                            </items>
+                        </Menu>
+                        <MenuItem text="Ir para coordenadas..." onAction="#onGoToCoords" accelerator="Shortcut+G"/>
+                        <MenuItem text="Ir para a área do levantamento" onAction="#onZoomToSurvey"/>
+                        <MenuItem text="Limpar alcances simulados" onAction="#onClearSimulatedBeams"/>
+                        <SeparatorMenuItem/>
+                        <MenuItem text="Terreno em 3D..." onAction="#onTerrain3D"/>
+                        <SeparatorMenuItem/>
+                        <MenuItem text="Centralizar mapa" onAction="#onFitView"/>
+                        <MenuItem text="Aproximar" onAction="#onZoomIn"/>
+                        <MenuItem text="Afastar" onAction="#onZoomOut"/>
+                        <SeparatorMenuItem/>
+                        <CheckMenuItem fx:id="sidePanelItem" text="Painel lateral" onAction="#onToggleSidePanel" accelerator="Shortcut+B"/>
+                        <MenuItem text="Somente o mapa (F11)" onAction="#onToggleFullMap"/>
+                    </items>
+                </Menu>
+
+                <Menu text="_Ferramentas">
+                    <items>
+                        <MenuItem text="Configurações..." onAction="#onSettings" accelerator="Shortcut+Comma"/>
+                        <SeparatorMenuItem/>
+                        <MenuItem text="Notificações por e-mail..." onAction="#onMailSettings"/>
+                        <MenuItem text="Rádios monitorados..." onAction="#onMonitoredRadios"/>
+                        <MenuItem text="Histórico dos rádios..." onAction="#onRadioHistory"/>
+                        <SeparatorMenuItem/>
+                        <MenuItem text="Log..." onAction="#onShowLog"/>
+                    </items>
+                </Menu>
+
+                <Menu text="Aj_uda">
+                    <items>
+                        <MenuItem text="Sobre o Radio Mapper" onAction="#onAbout"/>
+                    </items>
+                </Menu>
+            </menus>
+        </MenuBar>
+    </top>
+
+    <center>
+        <MapPane fx:id="mapPane"/>
+    </center>
+
+    <right>
+        <VBox fx:id="sidePanel" spacing="6" prefWidth="340">
+            <padding><Insets top="8" right="8" bottom="8" left="8"/></padding>
+            <Label text="Pontos de rede" style="-fx-font-weight: bold;"/>
+            <ListView fx:id="pointsList" prefHeight="180"/>
+            <HBox spacing="4">
+                <Button text="Localizar" onAction="#onLocatePoint"/>
+                <Button text="Coordenadas" onAction="#onPointCoords"/>
+                <Button text="Renomear" onAction="#onRenamePoint"/>
+                <Button text="Remover" onAction="#onRemovePoint"/>
+            </HBox>
+            <Separator/>
+            <Label text="Rádios do ponto" style="-fx-font-weight: bold;"/>
+            <ListView fx:id="radiosList" prefHeight="160"/>
+            <HBox spacing="4">
+                <Button text="Adicionar" onAction="#onAddRadio"/>
+                <Button text="Editar" onAction="#onEditRadio"/>
+                <Button text="Alcance" onAction="#onSimulateBeam"/>
+                <Button text="Navegador" onAction="#onOpenRadioBrowser"/>
+                <Button text="Remover" onAction="#onRemoveRadio"/>
+            </HBox>
+            <Separator/>
+            <Label text="Roteadores do ponto" style="-fx-font-weight: bold;"/>
+            <ListView fx:id="routersList" prefHeight="90"/>
+            <HBox spacing="4">
+                <Button text="Adicionar" onAction="#onAddRouter"/>
+                <Button text="Editar" onAction="#onEditRouter"/>
+                <Button text="Tráfego" onAction="#onRouterTraffic"/>
+                <Button text="Remover" onAction="#onRemoveRouter"/>
+            </HBox>
+            <Separator/>
+            <Label text="Todos os rádios" style="-fx-font-weight: bold;"/>
+            <HBox spacing="6" alignment="CENTER_LEFT">
+                <Label text="Ordenar:"/>
+                <ComboBox fx:id="allRadiosSort" prefWidth="140"/>
+                <Label fx:id="allRadiosSummary" text=""/>
+            </HBox>
+            <ListView fx:id="allRadiosList" prefHeight="240" VBox.vgrow="ALWAYS"/>
+        </VBox>
+    </right>
+
+    <bottom>
+        <VBox fx:id="bottomBox">
+            <!-- Perfil do feixe: some quando nenhum rádio com feixe está selecionado -->
+            <BeamProfilePane fx:id="profilePane" visible="false" managed="false"/>
+            <HBox spacing="10">
+                <padding><Insets top="4" right="8" bottom="4" left="8"/></padding>
+                <Label fx:id="statusLabel" text="Pronto."/>
+            </HBox>
+        </VBox>
+    </bottom>
+</BorderPane>
