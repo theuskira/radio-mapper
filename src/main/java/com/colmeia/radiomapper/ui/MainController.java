@@ -1516,10 +1516,28 @@ public class MainController {
             }
         }
 
-        if (!r.hasBeam()) { hideProfile(); return; }
+        // Um AP sem estacao associada continua sendo um AP: o feixe dele e'
+        // o que se quer ver para decidir onde por a proxima estacao. Sem
+        // alcance digitado, o numero vem da varredura (se ja houver) ou do
+        // orcamento, e a tela diz de onde veio.
+        var alc = com.colmeia.radiomapper.rf.BeamReach.de(
+                r, simuladoDoRadio(r));
+        if (!alc.vale()) { hideProfile(); return; }
         profilePane.setVisible(true);
         profilePane.setManaged(true);
-        profilePane.showBeam(r, p, elevation, project.isMapMode());
+        profilePane.showBeam(r, p, elevation, project.isMapMode(),
+                alc.metros(), alc.origem().toString());
+    }
+
+    /** Alcance ja apurado pela varredura para este radio, ou null. */
+    private Double simuladoDoRadio(Radio r) {
+        if (r == null) return null;
+        var cob = mapPane.simulatedCoverage(r.getId());
+        if (cob == null || cob.vazia()) return null;
+        double k = com.colmeia.radiomapper.geo.Mercator.groundScaleAt(
+                com.colmeia.radiomapper.geo.Mercator.latOfWorldY(
+                        (cob.minY() + cob.maxY()) / 2));
+        return (cob.maxX() - cob.minX()) / 2 * (k <= 0 ? 1 : k);
     }
 
     private void hideProfile() {

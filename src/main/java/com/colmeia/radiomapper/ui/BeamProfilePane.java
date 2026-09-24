@@ -566,6 +566,16 @@ public class BeamProfilePane extends VBox {
 
     /** Perfil de um feixe só, ao longo do azimute do rádio. */
     public void showBeam(Radio r, NetworkPoint p, ElevationChain elev, boolean mapMode) {
+        showBeam(r, p, elev, mapMode, r == null ? 0 : r.getBeamRangeM(), "do cadastro");
+    }
+
+    /**
+     * @param alcanceM ate onde perfilar, em metros de chao
+     * @param origem   de onde saiu esse numero, para o cabecalho nao deixar
+     *                 passar um teto por medida
+     */
+    public void showBeam(Radio r, NetworkPoint p, ElevationChain elev, boolean mapMode,
+                         double alcanceM, String origem) {
         if (r == null || p == null) { clear(); return; }
         deslocA = deslocB = 0;
         mostrarBotoesMover(false);
@@ -574,15 +584,18 @@ public class BeamProfilePane extends VBox {
         // Feixe solto nao e enlace: a marca do enlace anterior nao pode pegar
         // carona no proximo desenho.
         planned = false;
-        header.setText("Feixe: " + nameOf(r) + "   (" + p.getName() + ")");
+        header.setText("Feixe: " + nameOf(r) + "   (" + p.getName() + ")"
+                + "  — " + MapPane.formatRange(alcanceM) + " " + origem);
 
-        if (!checkPreconditions(mapMode, r.getBeamRangeM() > 0,
-                "Sem alcance definido — informe o alcance na aba Feixe.")) return;
+        if (!checkPreconditions(mapMode, alcanceM > 0,
+                "Sem alcance para perfilar: informe o alcance na aba Feixe, ou "
+                + "preencha frequência, ganho e potência para o "
+                + "programa estimar.")) return;
 
         double az = Math.toRadians(r.getBeamAzimuthDeg());
         double dirX = Math.sin(az), dirY = -Math.cos(az);
         linkAzimuth = r.getBeamAzimuthDeg();
-        sample(p.getX(), p.getY(), dirX, dirY, r.getBeamRangeM(), elev, () -> {
+        sample(p.getX(), p.getY(), dirX, dirY, alcanceM, elev, () -> {
             baseB = Double.NaN;
             buildBeamStats();
         });

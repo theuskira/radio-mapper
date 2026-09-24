@@ -2151,14 +2151,16 @@ public class MapPane extends Pane {
         Project p = project.get();
         boolean showAll = beamsToggle != null && beamsToggle.isSelected();
         boolean hasPreview = previewBeamRadio != null && previewBeamPoint != null
-                && previewBeamRadio.hasBeam();
+                && com.colmeia.radiomapper.rf.BeamReach.temAlgum(
+                        previewBeamRadio, simuladoDe(previewBeamRadio));
         if (!showAll && !hasPreview) return;
 
         if (p != null && showAll) {
             for (NetworkPoint np : p.getPoints()) {
                 for (Radio r : np.getRadios()) {
                     if (r == previewBeamRadio) continue; // o preview cuida desse
-                    if (!r.isBeamVisible() || !r.hasBeam()) continue;
+                    if (!r.isBeamVisible()) continue;
+                    if (!com.colmeia.radiomapper.rf.BeamReach.temAlgum(r, simuladoDe(r))) continue;
                     beamsLayer.getChildren().add(createBeamShape(np, r));
                 }
             }
@@ -2189,8 +2191,21 @@ public class MapPane extends Pane {
      * topo e cresce em sentido horário, então o mapeamento é:
      *   javafxDeg = 90 − compassDeg.
      */
+    /** O alcance ja apurado pela varredura para este radio, ou null. */
+    private Double simuladoDe(Radio r) {
+        if (r == null) return null;
+        var cob = simBeams.get(r.getId());
+        if (cob == null || cob.vazia()) return null;
+        // A grade e' quadrada em volta do alcance maximo: meia largura dela,
+        // em metros de chao, e' esse alcance.
+        double k = Mercator.groundScaleAt(Mercator.latOfWorldY(
+                (cob.minY() + cob.maxY()) / 2));
+        return (cob.maxX() - cob.minX()) / 2 * (k <= 0 ? 1 : k);
+    }
+
     private Shape createBeamShape(NetworkPoint np, Radio r) {
-        double radius = groundMetersToWorld(r.getBeamRangeM(), np.getY());
+        var alc = com.colmeia.radiomapper.rf.BeamReach.de(r, simuladoDe(r));
+        double radius = groundMetersToWorld(alc.metros(), np.getY());
         Color base = effectiveBeamColor(r);
         double op = r.getBeamOpacity();
         Shape shape;
@@ -2211,6 +2226,10 @@ public class MapPane extends Pane {
         shape.setFill(fill);
         shape.setStroke(stroke);
         shape.setStrokeWidth(1.5);
+        // Alcance que nao olhou o terreno sai tracejado: e' um teto, nao uma
+        // promessa. No projeto de teste um AP que o orcamento levava a 909 m
+        // alcancava 48 m depois de o relevo entrar.
+        if (alc.origem().otimista()) shape.getStrokeDashArray().setAll(6.0, 5.0);
         shape.setCursor(Cursor.HAND);
         shape.setOnMouseEntered(e -> {
             shape.setFill(fillHover);
