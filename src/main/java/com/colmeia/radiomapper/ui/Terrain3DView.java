@@ -1982,7 +1982,16 @@ public final class Terrain3DView {
         mastro.setTranslateY(ySolo - h / 2);
         out.add(mastro);
 
-        Sphere topo = new Sphere(escala * ESFERA);
+        // A bola marca a ponta da antena, e nao pode engolir a antena.
+        //
+        // Com tamanho fixo de simbolo ela saia com 15,6 m de diametro sobre um
+        // mastro de 4 m desenhado com 12 unidades: 1,3 vez a torre inteira.
+        // Aproximar nao ajudava, porque os dois cresciam juntos e o que se via
+        // continuava sendo so a bola. Aqui ela encolhe junto com o mastro
+        // curto, com um piso para nao sumir quando a antena e' rente ao chao.
+        double raioBola = Math.min(escala * ESFERA,
+                Math.max(h * 0.35, escala * ESFERA * 0.2));
+        Sphere topo = new Sphere(raioBola);
         PhongMaterial matTopo = new PhongMaterial(cor.brighter());
         matTopo.setSelfIlluminationMap(corSolida(cor.deriveColor(0, 1, 0.8, 1)));
         topo.setMaterial(matTopo);

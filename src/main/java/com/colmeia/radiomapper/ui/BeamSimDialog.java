@@ -123,6 +123,12 @@ public final class BeamSimDialog {
         dlg.setTitle("Alcance simulado");
         dlg.setHeaderText(nome(radio) + "  ·  " + p.getName() + "  ·  " + radio.getRole());
         dlg.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+        // Janela solta, e nao modal: mexer no alcance e' comparar com o mapa,
+        // e com a janela travando o resto era preciso fechar, arrastar o mapa
+        // e abrir de novo a cada olhada. Continua pertencendo a janela
+        // principal (fecha junto, fica por cima), mas nao bloqueia.
+        dlg.initModality(javafx.stage.Modality.NONE);
+        dlg.setResizable(true);
 
         // ------------------------ Parâmetros do rádio ------------------------
         Spinner<Double> potencia = Spinners.decimal(-10, 40, r.getTxPowerDbm(), 1, 1);
@@ -469,7 +475,9 @@ public final class BeamSimDialog {
         dlg.getDialogPane().setContent(box);
 
         Platform.runLater(simular[0]);
-        dlg.showAndWait();
+        // show(), nao showAndWait(): esperar aqui seria bloquear o mapa de
+        // novo, so que pelo lado de ca.
+        dlg.show();
     }
 
     // ------------------------ Apoio ------------------------
