@@ -85,6 +85,12 @@ public class BeamProfilePane extends VBox {
      * Enquanto e' diferente de zero, o desenho mostra uma hipotese, nao o
      * projeto — dai o marcador e o botao de aplicar.
      */
+    /**
+     * Quanto o cone do feixe pode alargar a escala, como fra\u00e7\u00e3o do
+     * que o relevo e as antenas j\u00e1 ocupam.
+     */
+    private static final double FOLGA_DO_CONE = 0.6;
+
     private double deslocA, deslocB;
     /** Ponto de cada ponta no mapa, para poder aplicar o deslocamento. */
     private NetworkPoint pontoA, pontoB;
@@ -234,7 +240,11 @@ public class BeamProfilePane extends VBox {
         canvas.setOnMousePressed(ev -> {
             // Pegar a torre tem prioridade sobre deslocar a vista: quem clicou
             // em cima do mastro queria a torre, nao o pan.
-            arrastandoTorre = ready && mode == Mode.LINK ? torreSob(ev.getX(), ev.getY()) : 0;
+            // Tambem no feixe solto: arrastar a torre ao longo do perfil e'
+            // como se procura um lugar mais alto para ela, e o modo de um
+            // radio so era justamente onde isso mais faltava -- e' o caso de
+            // quem ainda esta escolhendo onde por o ponto de acesso.
+            arrastandoTorre = ready && arrastavel() ? torreSob(ev.getX(), ev.getY()) : 0;
             arrastando = arrastandoTorre == 0;
             arrastoX = ev.getX();
             arrastoY = ev.getY();
@@ -268,7 +278,7 @@ public class BeamProfilePane extends VBox {
             mouseY = ev.getY();
             // Cursor de redimensionar avisa que ali da para pegar a torre; sem
             // isso a funcao existiria sem nada indicando que existe.
-            if (ready && mode == Mode.LINK && torreSob(ev.getX(), ev.getY()) != 0) {
+            if (ready && arrastavel() && torreSob(ev.getX(), ev.getY()) != 0) {
                 canvas.setCursor(Cursor.H_RESIZE);
             } else {
                 canvas.setCursor(zoom > 1 ? Cursor.OPEN_HAND : Cursor.DEFAULT);
@@ -298,8 +308,15 @@ public class BeamProfilePane extends VBox {
         boolean naFaixaVertical = py >= PAD_TOP && py <= PAD_TOP + plotH();
         if (!naFaixaVertical) return 0;
         if (Math.abs(px - xa) <= alvo) return 1;
-        if (Math.abs(px - xb) <= alvo) return 2;
+        // No feixe solto nao ha torre B: posB() e' so o fim do alcance, e
+        // deixar a faixa sensivel ali daria uma torre invisivel para agarrar.
+        if (mode == Mode.LINK && Math.abs(px - xb) <= alvo) return 2;
         return 0;
+    }
+
+    /** Ha torre para arrastar? Enlace e feixe solto tem; a tela vazia nao. */
+    private boolean arrastavel() {
+        return mode == Mode.LINK || mode == Mode.SINGLE;
     }
 
     /**
@@ -311,7 +328,14 @@ public class BeamProfilePane extends VBox {
      */
     private void moverTorre(int qual, double novaPos) {
         double folga = 50;   // nao deixa as duas se encostarem
-        if (qual == 1) {
+        if (qual == 1 && mode == Mode.SINGLE) {
+            // Sem torre B, o limite e' outro: o feixe inteiro tem que
+            // continuar sobre terreno amostrado. Arrastando alem disso, a
+            // ponta do alcance cairia fora do que foi levantado e a folga
+            // minima passaria a ser calculada sobre menos caminho -- dando
+            // "visada livre" por falta de dado, que e' o pior dos erros.
+            deslocA = Math.max(plotMinD, Math.min(plotMaxD - totalM, novaPos));
+        } else if (qual == 1) {
             double min = plotMinD;
             double max = posB() - folga;
             deslocA = Math.max(min, Math.min(max, novaPos));
@@ -321,8 +345,13 @@ public class BeamProfilePane extends VBox {
             deslocB = Math.max(min, Math.min(max, novaPos)) - totalM;
         }
         recomputarBases();
-        buildLinkStats();
+        refazerIndicadores();
         draw();
+    }
+
+    /** Os indicadores do modo em que a tela esta. */
+    private void refazerIndicadores() {
+        if (mode == Mode.SINGLE) buildBeamStats(); else buildLinkStats();
     }
 
     /** Devolve as torres ao lugar do projeto. */
@@ -330,7 +359,7 @@ public class BeamProfilePane extends VBox {
         if (!movido()) return;
         deslocA = deslocB = 0;
         recomputarBases();
-        buildLinkStats();
+        refazerIndicadores();
         draw();
     }
 
@@ -595,6 +624,17 @@ public class BeamProfilePane extends VBox {
         double az = Math.toRadians(r.getBeamAzimuthDeg());
         double dirX = Math.sin(az), dirY = -Math.cos(az);
         linkAzimuth = r.getBeamAzimuthDeg();
+
+        // Sem isto o arrasto nao teria como virar coordenada: e' o que
+        // converte "200 m adiante no eixo" em um ponto do mapa. Ficava so no
+        // modo enlace, e por isso o feixe solto nem deixava pegar a torre.
+        double kk = Mercator.groundScaleAt(Mercator.latOfWorldY(p.getY()));
+        pontoA = p;
+        pontoB = null;
+        dirWorldX = dirX;
+        dirWorldY = dirY;
+        worldPorMetro = kk <= 0 ? 1 : 1 / kk;
+
         sample(p.getX(), p.getY(), dirX, dirY, alcanceM, elev, () -> {
             baseB = Double.NaN;
             buildBeamStats();
@@ -765,7 +805,19 @@ public class BeamProfilePane extends VBox {
 
     /** A amostra está no trecho entre as duas antenas (fora das margens)? */
     private boolean entreAntenas(int i) {
-        return dist[i] >= posA() && dist[i] <= posB();
+        return dist[i] >= posA() && dist[i] <= fimDoTrecho();
+    }
+
+    /**
+     * Onde termina o trecho que interessa.
+     *
+     * No enlace e' a outra antena. No feixe solto e' o alcance CONTADO A
+     * PARTIR DA TORRE: o alcance e' propriedade do radio, entao arrastar a
+     * torre leva junto a ponta do feixe. Medir sempre ate o fim do eixo faria
+     * a torre arrastada para tras ganhar alcance de gra\u00e7a.
+     */
+    private double fimDoTrecho() {
+        return mode == Mode.LINK ? posB() : posA() + totalM;
     }
 
     /** Altitude do solo numa posicao qualquer do eixo. */
@@ -860,6 +912,11 @@ public class BeamProfilePane extends VBox {
     private void buildBeamStats() {
         montarMenu3D();
         stats.getChildren().clear();
+        // Mesma regra do enlace: torre fora do lugar acende os botoes de
+        // aplicar/desfazer e manda o fantasma para o mapa, para o arrasto
+        // aqui ser visivel la.
+        mostrarBotoesMover(movido());
+        publicarHints();
 
         double primeira = -1, folgaMin = Double.MAX_VALUE, terrenoMax = -Double.MAX_VALUE;
         for (int i = 1; i < dist.length; i++) {
@@ -1124,24 +1181,50 @@ public class BeamProfilePane extends VBox {
         double d0 = plotMinD, d1 = plotMaxD;
         double maxD = totalM;
 
+        // O ESSENCIAL: o relevo e as antenas. E' o que o gráfico existe para
+        // mostrar, e nada pode espremer isto.
         double minH = Double.MAX_VALUE, maxH = -Double.MAX_VALUE;
         for (double g : ground) {
             if (Double.isNaN(g)) continue;
             minH = Math.min(minH, g); maxH = Math.max(maxH, g);
         }
+        minH = Math.min(minH, antennaTopA()); maxH = Math.max(maxH, antennaTopA());
+        if (mode == Mode.LINK) {
+            minH = Math.min(minH, antennaTopB()); maxH = Math.max(maxH, antennaTopB());
+        }
+        if (minH == Double.MAX_VALUE) { minH = 0; maxH = 100; }
+
+        // O cone pode alargar a escala, mas só até certo ponto.
+        //
+        // Antes ele mandava: uma antena setorial de 120° de abertura
+        // vertical, apontada 21° para baixo, faz o cone descer 1351 m em
+        // 390 m de alcance. O gráfico se esticava até -2000 m para
+        // caber a borda do cone, e o relevo — 14 m de variação
+        // ali — virava um fio verde no topo. Quem abria o feixe de um AP
+        // via um terreno reto que não existe.
+        //
+        // Isto só aparecia sem o outro rádio: num enlace o cone vai
+        // até a antena de lá e fica do tamanho do trecho.
+        //
+        // Cortar o cone na borda do gráfico não esconde nada: um cone
+        // que sai por cima continua se lendo como cone.
+        double essencial = Math.max(20, maxH - minH);
+        double tetoBaixo = minH - essencial * FOLGA_DO_CONE;
+        double tetoAlto = maxH + essencial * FOLGA_DO_CONE;
         for (double dm : new double[]{0, maxD / 2, maxD}) {
             for (double a : new double[]{loA(), hiA(), radioA.getBeamTiltDeg()}) {
                 double v = lineA(dm, a);
-                minH = Math.min(minH, v); maxH = Math.max(maxH, v);
+                minH = Math.max(tetoBaixo, Math.min(minH, v));
+                maxH = Math.min(tetoAlto, Math.max(maxH, v));
             }
             if (mode == Mode.LINK) {
                 for (double a : new double[]{loB(), hiB(), radioB.getBeamTiltDeg()}) {
                     double v = lineB(dm, a);
-                    minH = Math.min(minH, v); maxH = Math.max(maxH, v);
+                    minH = Math.max(tetoBaixo, Math.min(minH, v));
+                    maxH = Math.min(tetoAlto, Math.max(maxH, v));
                 }
             }
         }
-        if (minH == Double.MAX_VALUE) { minH = 0; maxH = 100; }
         double margem = Math.max(10, (maxH - minH) * 0.12);
         minH -= margem; maxH += margem;
         final double fMin = minH, fMax = maxH;

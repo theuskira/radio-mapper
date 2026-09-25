@@ -82,6 +82,15 @@ public class MainController {
      */
     private String camadaAtivaId;
 
+    /**
+     * A janela 3D aberta, para alimenta-la enquanto o alcance e' recalculado.
+     *
+     * Uma so: abrir uma segunda substitui a referencia, e a antiga simplesmente
+     * deixa de receber atualizacao -- continua na tela com o que tinha, que e'
+     * melhor do que duas janelas disputando o mesmo desenho.
+     */
+    private Terrain3DView.Janela janela3D;
+
     private ImageLayer camadaAtiva() {
         ImageLayer l = project == null ? null : project.imageById(camadaAtivaId);
         if (l != null) return l;
@@ -223,6 +232,15 @@ public class MainController {
             ponto.setY(novoY);
             refreshAll();
             mapPane.locate(novoX, novoY);
+            // O comentario acima dizia "o mesmo caminho de refresh de um
+            // arrasto no mapa", e tinha deixado de ser verdade: o arrasto no
+            // mapa passou a limpar o cache, refazer a varredura na posicao
+            // nova e remontar o 3D. Sem isto, mover pelo perfil deixava no
+            // mapa uma cobertura presa ao lugar antigo -- pior que nao ter,
+            // porque parece atual.
+            limparCacheDeAlcance();
+            reabrir3DemBreve();
+            refazerAlcanceDe(ponto);
             setStatus("Ponto \"" + ponto.getName() + "\" movido pela an\u00e1lise do perfil.");
             Log.info("Ponto \"%s\" movido pelo perfil para %.6f, %.6f", ponto.getName(),
                     com.colmeia.radiomapper.geo.Mercator.latOfWorldY(novoY),
@@ -266,11 +284,12 @@ public class MainController {
             Radio sel = selectedRadio();
             if (sel != null) showProfile(sel);
             limparCacheDeAlcance();
-            if (mapPane.hasSimulatedBeams()) {
-                mapPane.clearSimulatedBeams();
-                setStatus("Ponto movido \u2014 o alcance simulado saiu do mapa, "
-                        + "simule de novo na posi\u00e7\u00e3o nova.");
-            }
+            // O 3D foi montado em volta do ponto ANTIGO: a caixa de terreno, a
+            // torre e o feixe saiam de onde ele estava. Trocar so as grades
+            // nao resolve — e' preciso refazer a cena, o que se faz reabrindo
+            // no mesmo angulo para nao custar a orientacao de quem olhava.
+            reabrir3DemBreve();
+            refazerAlcanceDe(ponto);
         });
 
         // botao direito sobre o feixe: editar / ocultar
@@ -733,6 +752,10 @@ public class MainController {
                 simCache,
                 (radioId, cobertura, comRelevo) -> {
                     mapPane.setSimulatedBeam(radioId, cobertura, comRelevo);
+                    // O 3D mostra este mesmo alcance: se esta aberto, recebe o
+                    // resultado na hora, sem perder o angulo nem o que esta
+                    // marcado. Antes era preciso fechar e reabrir a cena.
+                    atualizar3D();
                     setStatus(cobertura == null
                             ? "Alcance simulado removido do mapa."
                             : comRelevo
@@ -746,6 +769,7 @@ public class MainController {
                             : "Alcance em cor \u00fanica.");
                 },
                 aplicado -> {
+                    atualizar3D();
                     // Tudo que e' desenhado a partir do radio: o feixe no mapa,
                     // a pre-visualizacao de enlace e as listas. Sem isto, quem
                     // aplicava uma altura nova continuava vendo o perfil da
@@ -776,15 +800,124 @@ public class MainController {
             return assinatura.equals(simAssinatura.get(radioId)) ? simResultado.get(radioId) : null;
         }
         @Override public void put(String radioId, String assinatura,
-                                  com.colmeia.radiomapper.rf.BeamCoverage.Result r) {
+                                  com.colmeia.radiomapper.rf.BeamCoverage.Result r,
+                                  com.colmeia.radiomapper.rf.BeamCoverage.Params prm) {
             simAssinatura.put(radioId, assinatura);
             simResultado.put(radioId, r);
+            simParametros.put(radioId, prm);
         }
     };
+
+    /**
+     * Com que par\u00e2metros cada r\u00e1dio foi varrido pela \u00faltima vez.
+     *
+     * Sobrevive \u00e0 limpeza do cache de resultado de prop\u00f3sito: o
+     * resultado envelhece quando a geometria muda, mas a PERGUNTA que se fez
+     * continua valendo \u2014 mesma sensibilidade do outro lado, mesmo teto de
+     * busca. \u00c9 o que permite refazer a varredura sozinho depois de
+     * arrastar a torre, sem abrir janela nenhuma para reperguntar.
+     */
+    private final java.util.Map<String, com.colmeia.radiomapper.rf.BeamCoverage.Params>
+            simParametros = new java.util.HashMap<>();
 
     private void limparCacheDeAlcance() {
         simAssinatura.clear();
         simResultado.clear();
+    }
+
+    /**
+     * Refaz, na posi\u00e7\u00e3o nova, as varreduras que estavam desenhadas.
+     *
+     * <h3>Por que isto existe</h3>
+     * O alcance simulado era um retrato tirado uma vez: ao arrastar a torre
+     * ele saia do mapa e ficava um recado pedindo para simular de novo. Mas
+     * arrastar a torre \u00e9 exatamente o gesto de quem est\u00e1 perguntando
+     * "e se ela ficasse ali?" \u2014 e a resposta sumia bem na hora em que se
+     * queria compar\u00e1-la. Medido neste projeto, a varredura custa 220 ms:
+     * barato demais para cobrar do usu\u00e1rio um clique e a perda da
+     * compara\u00e7\u00e3o.
+     *
+     * <h3>O que ele n\u00e3o faz</h3>
+     * N\u00e3o inventa varredura para r\u00e1dio que n\u00e3o tinha nenhuma: quem
+     * nunca pediu alcance continua sem alcance no mapa. E s\u00f3 refaz o que
+     * tem par\u00e2metro guardado; sem ele, o desenho velho sai do mapa como
+     * antes, porque mant\u00ea-lo no lugar antigo seria mentir.
+     */
+    private void refazerAlcanceDe(NetworkPoint np) {
+        if (np == null || !project.isMapMode()) { tirarAlcanceDoMapa(); return; }
+
+        java.util.List<Radio> refazer = new java.util.ArrayList<>();
+        for (Radio r : np.getRadios()) {
+            if (mapPane.simulatedCoverage(r.getId()) == null) continue;
+            if (simParametros.get(r.getId()) == null) continue;
+            refazer.add(r);
+        }
+        if (refazer.isEmpty()) { tirarAlcanceDoMapa(); return; }
+
+        // O desenho antigo sai JA: ele esta preso ao lugar de onde a torre
+        // saiu, e deixa-lo na tela enquanto a conta roda mostraria sinal
+        // saindo de onde nao ha mais antena.
+        for (Radio r : refazer) mapPane.setSimulatedBeam(r.getId(), null, true);
+        setStatus("Ponto movido \u2014 refazendo o alcance na posi\u00e7\u00e3o nova...");
+
+        double cx = np.getX(), cy = np.getY();
+        double k = Mercator.groundScaleAt(Mercator.latOfWorldY(cy));
+        double wpm = k <= 0 ? 1 : 1 / k;
+
+        for (Radio r : refazer) {
+            String id = r.getId();
+            var prm = simParametros.get(id);
+            Task<com.colmeia.radiomapper.rf.BeamCoverage.Result> t = new Task<>() {
+                @Override protected com.colmeia.radiomapper.rf.BeamCoverage.Result call() {
+                    if (prm.useTerrain()) {
+                        double[] bb = com.colmeia.radiomapper.rf.BeamCoverage
+                                .sweepBoundsWorld(r, prm, cx, cy, wpm);
+                        if (bb != null) {
+                            TerrainTiles.INSTANCE.prefetch(bb[0], bb[1], bb[2], bb[3], 20000);
+                        }
+                    }
+                    return com.colmeia.radiomapper.rf.BeamCoverage
+                            .simulate(r, cx, cy, elevation, wpm, prm);
+                }
+            };
+            t.setOnSucceeded(ev -> {
+                var res = t.getValue();
+                // A torre pode ter sido arrastada de novo enquanto isto rodava:
+                // ai este resultado e' de um lugar que ja nao vale, e quem
+                // manda e' a varredura que veio depois.
+                NetworkPoint agora = project.findPointOfRadio(id).orElse(null);
+                if (agora == null || agora.getX() != cx || agora.getY() != cy) return;
+
+                simAssinatura.put(id, com.colmeia.radiomapper.rf.BeamCoverage
+                        .signature(r, prm, cx, cy));
+                simResultado.put(id, res);
+                mapPane.setSimulatedBeam(id, res.valid() ? res.cobertura() : null,
+                        res.terrainUsed());
+                atualizar3D();
+                setStatus(res.valid()
+                        ? "Alcance refeito na posi\u00e7\u00e3o nova: "
+                          + MapPane.formatRange(alcanceDoFeixe(r).metros()) + "."
+                        : "Na posi\u00e7\u00e3o nova este r\u00e1dio n\u00e3o alcan\u00e7a nada.");
+            });
+            t.setOnFailed(ev -> {
+                mapPane.setSimulatedBeam(id, null, true);
+                setStatus("N\u00e3o deu para refazer o alcance aqui \u2014 use Alcance.");
+                Log.warn("Falha ao refazer alcance de %s: %s", id,
+                        t.getException() == null ? "?" : t.getException().toString());
+            });
+            Thread th = new Thread(t, "alcance-" + id);
+            th.setDaemon(true);
+            th.start();
+        }
+    }
+
+    /** Tira do mapa o alcance que ficou preso ao lugar antigo. */
+    private void tirarAlcanceDoMapa() {
+        if (!mapPane.hasSimulatedBeams()) return;
+        mapPane.clearSimulatedBeams();
+        atualizar3D();
+        setStatus("Ponto movido \u2014 o alcance simulado saiu do mapa, "
+                + "simule de novo na posi\u00e7\u00e3o nova.");
     }
 
     /**
@@ -865,12 +998,16 @@ public class MainController {
         // A ortofoto do projeto tem prioridade sobre o mapa base: e' do mesmo
         // voo da nuvem, na resolucao do voo. O satelite fica de reserva para o
         // que ficou fora dela.
-        Terrain3DView.show(mainWindow(), elevation, np, r, outroPonto, outroRadio,
+        janela3D = Terrain3DView.show(mainWindow(), elevation, np, r, outroPonto, outroRadio,
                 coberturas.isEmpty() ? null : coberturas, project.getBasemap(),
                 mapPane.currentImages(), project.getImages(), mapPane.surveyRings(),
-                com.colmeia.radiomapper.rf.BeamReach.de(r, simuladoDoRadio(r)).metros(),
-                com.colmeia.radiomapper.rf.BeamReach.de(
-                        outroRadio, simuladoDoRadio(outroRadio)).metros());
+                // paraSinal, e nao de(): no 3D o cone tem que ir ate onde o
+                // sinal vai. O numero do cadastro serve ao setor do mapa, e
+                // aqui daria um cone de 40 m numa antena que cobre 2,5 km.
+                alcanceDoFeixe(r).metros(), alcanceDoFeixe(outroRadio).metros(),
+                alcanceDoFeixe(r).origem().toString(),
+                alcanceDoFeixe(outroRadio).origem().toString(),
+                anguloDoTerreno3D);
     }
 
     private static String nomeDoRadio(Radio r) {
@@ -1532,6 +1669,74 @@ public class MainController {
                 alc.metros(), alc.origem().toString());
     }
 
+    /**
+     * Refaz a cena 3D depois de a geometria mudar, mantendo o ângulo.
+     *
+     * Só quando já havia uma janela aberta: abrir uma sozinha porque alguém
+     * arrastou um ponto no mapa seria intrometido.
+     */
+    private void reabrir3D() {
+        if (janela3D == null || !janela3D.aberta()) return;
+        anguloDoTerreno3D = janela3D.angulo();
+        janela3D.fechar();
+        abrirTerreno3D();
+        anguloDoTerreno3D = null;
+    }
+
+    /**
+     * Remonta o 3D uma vez so, mesmo que varios pontos se mexam no mesmo gesto.
+     *
+     * Aplicar um deslocamento de enlace move as DUAS torres, uma chamada
+     * depois da outra. Remontar a cena em cada uma fecharia e abriria a
+     * janela duas vezes seguidas, piscando, para mostrar no fim exatamente o
+     * mesmo resultado.
+     */
+    private void reabrir3DemBreve() {
+        if (reabrir3DPendente) return;
+        reabrir3DPendente = true;
+        Platform.runLater(() -> { reabrir3DPendente = false; reabrir3D(); });
+    }
+
+    private boolean reabrir3DPendente;
+
+    /** Angulo a restaurar na proxima abertura do 3D, ou null. */
+    private double[] anguloDoTerreno3D;
+
+    /**
+     * Manda para a janela 3D o que ela mostra, recalculado.
+     *
+     * Monta a lista do zero a partir do que o mapa tem agora: e' a mesma fonte
+     * que a abertura usa, entao as duas telas nao podem discordar sobre onde
+     * ha sinal.
+     */
+    private void atualizar3D() {
+        if (janela3D == null || !janela3D.aberta()) return;
+
+        Radio r = selectedRadio();
+        if (r == null) return;
+        NetworkPoint np = project.findPointOfRadio(r.getId()).orElse(null);
+        if (np == null) return;
+        Link enlace = linkOf(r);
+        Radio outro = enlace == null ? null : partnerOf(enlace, r);
+
+        java.util.List<Terrain3DView.Cobertura> cobs = new java.util.ArrayList<>();
+        for (Radio alvo : new Radio[] { r, outro }) {
+            if (alvo == null) continue;
+            var grade = mapPane.simulatedCoverage(alvo.getId());
+            if (grade == null || grade.vazia()) continue;
+            cobs.add(new Terrain3DView.Cobertura(nomeDoRadio(alvo), grade));
+        }
+        janela3D.atualizar(cobs,
+                alcanceDoFeixe(r).metros(), alcanceDoFeixe(outro).metros(),
+                alcanceDoFeixe(r).origem().toString(),
+                alcanceDoFeixe(outro).origem().toString());
+    }
+
+    /** Ate onde o feixe 3D deste radio deve ir. */
+    private com.colmeia.radiomapper.rf.BeamReach.Alcance alcanceDoFeixe(Radio r) {
+        return com.colmeia.radiomapper.rf.BeamReach.paraSinal(r, simuladoDoRadio(r));
+    }
+
     /** Alcance ja apurado pela varredura para este radio, ou null. */
     private Double simuladoDoRadio(Radio r) {
         if (r == null) return null;
@@ -1871,7 +2076,8 @@ public class MainController {
         Radio sel = selectedRadio();
         if (sel != null) showProfile(sel);
         limparCacheDeAlcance();
-        mapPane.clearSimulatedBeams();
+        reabrir3D();
+        refazerAlcanceDe(np);
         setStatus(String.format(java.util.Locale.US,
                 "\"%s\" movido para %.6f, %.6f.", np.getName(), lat, lon));
         Log.info("Ponto \"%s\" movido por coordenada para %.6f, %.6f", np.getName(), lat, lon);

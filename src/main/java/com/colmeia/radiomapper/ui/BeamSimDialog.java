@@ -6,9 +6,11 @@ import com.colmeia.radiomapper.geo.TerrainTiles;
 import com.colmeia.radiomapper.model.NetworkPoint;
 import com.colmeia.radiomapper.model.Project;
 import com.colmeia.radiomapper.model.Radio;
+import com.colmeia.radiomapper.rf.ApAim;
 import com.colmeia.radiomapper.rf.BeamCoverage;
 import com.colmeia.radiomapper.rf.LinkBudget;
 import com.colmeia.radiomapper.rf.LinkPeer;
+import com.colmeia.radiomapper.rf.StationAim;
 import com.colmeia.radiomapper.util.Log;
 import javafx.animation.PauseTransition;
 import javafx.application.Platform;
@@ -69,7 +71,15 @@ public final class BeamSimDialog {
     /** Guarda o último resultado por rádio, para não recalcular à toa. */
     public interface Cache {
         BeamCoverage.Result get(String radioId, String assinatura);
-        void put(String radioId, String assinatura, BeamCoverage.Result r);
+
+        /**
+         * @param prm com que parâmetros se varreu — guardar isto é o que
+         *            permite refazer a mesma varredura depois, quando o
+         *            rádio muda de lugar e ninguém está com esta janela
+         *            aberta para reinformar nada
+         */
+        void put(String radioId, String assinatura, BeamCoverage.Result r,
+                 BeamCoverage.Params prm);
     }
 
     /** Espera este tanto depois da última mudança antes de recalcular. */
@@ -234,7 +244,10 @@ public final class BeamSimDialog {
 
         TextArea saida = new TextArea();
         saida.setEditable(false);
-        saida.setPrefRowCount(7);
+        // Onze linhas: a recomendação de apontamento tem quatro campos
+        // com o porquê de cada um, e com sete o leitor precisava rolar para
+        // ver se sobrou conselho embaixo.
+        saida.setPrefRowCount(11);
         saida.setWrapText(true);
         saida.setStyle("-fx-font-family: 'Consolas','Menlo','Monospaced'; -fx-font-size: 11;");
 
@@ -256,18 +269,21 @@ public final class BeamSimDialog {
         final boolean[] ocupado = { false };
         final boolean[] refazer = { false };
 
+        // Leitura AO VIVO: le o texto e nao mexe nele. Esta tela recalcula
+        // sozinha 350 ms depois da ultima tecla, e um commit aqui reescreveria
+        // o campo no meio da digitacao -- ver Spinners.lido.
         Runnable lerCampos = () -> {
-            r.setTxPowerDbm(Spinners.commit(potencia, r.getTxPowerDbm()));
-            r.setAntennaGainDbi(Spinners.commit(ganho, r.getAntennaGainDbi()));
+            r.setTxPowerDbm(Spinners.lido(potencia, r.getTxPowerDbm()));
+            r.setAntennaGainDbi(Spinners.lido(ganho, r.getAntennaGainDbi()));
             // O modo antes da altura: getAntennaHeightM() aplica piso zero
             // quando e' mastro, e gravar a altura com o modo velho podia zerar
             // uma cota negativa antes de o modo novo entrar.
             if (modoAlt.getValue() != null) r.setAltitudeMode(modoAlt.getValue());
-            r.setAntennaHeightM(Spinners.commit(altura, r.getAntennaHeightM()));
-            r.setBeamAzimuthDeg(Spinners.commit(azimute, r.getBeamAzimuthDeg()));
-            r.setBeamWidthDeg(Spinners.commit(aberturaH, r.getBeamWidthDeg()));
-            r.setBeamVerticalWidthDeg(Spinners.commit(aberturaV, r.getBeamVerticalWidthDeg()));
-            r.setBeamTiltDeg(Spinners.commit(tilt, r.getBeamTiltDeg()));
+            r.setAntennaHeightM(Spinners.lido(altura, r.getAntennaHeightM()));
+            r.setBeamAzimuthDeg(Spinners.lido(azimute, r.getBeamAzimuthDeg()));
+            r.setBeamWidthDeg(Spinners.lido(aberturaH, r.getBeamWidthDeg()));
+            r.setBeamVerticalWidthDeg(Spinners.lido(aberturaV, r.getBeamVerticalWidthDeg()));
+            r.setBeamTiltDeg(Spinners.lido(tilt, r.getBeamTiltDeg()));
         };
 
         Runnable[] simular = new Runnable[1];
@@ -295,11 +311,11 @@ public final class BeamSimDialog {
             avisoAbertura.setVisible(varreTudo);
 
             BeamCoverage.Params prm = new BeamCoverage.Params(
-                    Spinners.commit(minRssi, -70),
-                    Spinners.commit(ganhoLonge, par.gainDbi()),
-                    Spinners.commit(caboLonge, par.cableDb()),
-                    Spinners.commit(alturaRx, par.alturaM()),
-                    Spinners.commit(tetoKm, 30) * 1000,
+                    Spinners.lido(minRssi, -70),
+                    Spinners.lido(ganhoLonge, par.gainDbi()),
+                    Spinners.lido(caboLonge, par.cableDb()),
+                    Spinners.lido(alturaRx, par.alturaM()),
+                    Spinners.lido(tetoKm, 30) * 1000,
                     usarRelevo.isSelected());
 
             String assinatura = BeamCoverage.signature(r, prm, p.getX(), p.getY());
@@ -336,7 +352,7 @@ public final class BeamSimDialog {
             t.setOnSucceeded(ev -> {
                 ocupado[0] = false;
                 BeamCoverage.Result res = t.getValue();
-                if (cache != null) cache.put(radio.getId(), assinatura, res);
+                if (cache != null) cache.put(radio.getId(), assinatura, res, prm);
                 saida.setText(relatorio(radio, r, res, prm, par, false));
                 onSimulated.accept(radio.getId(),
                         res.valid() ? res.cobertura() : null, res.terrainUsed());
@@ -373,61 +389,90 @@ public final class BeamSimDialog {
             if (onQuality != null) onQuality.accept(b);
         });
 
-        // ------------------------ Recomendacao de altura ------------------------
-        Button recomendar = new Button("Recomendar altura");
-        recomendar.setTooltip(new javafx.scene.control.Tooltip(
-                "Refaz a cobertura para v\u00e1rias alturas e diz at\u00e9 onde "
-                + "subir a antena ainda paga."));
-        Button usar = new Button("Usar a recomendada");
+        // ------------------------ Recomendacao ------------------------
+        // Duas perguntas diferentes atras do mesmo botao, porque sao a MESMA
+        // pergunta do ponto de vista de quem usa: "como melhoro este radio?".
+        // Para um AP isso e' area coberta; para uma estacao, que nao cobre
+        // area nenhuma, e' o apontamento para o AP dela.
+        boolean ehEstacao = radio.getRole().isStation();
+
+        Button recomendar = new Button(ehEstacao ? "Recomendar apontamento"
+                                                 : "Recomendar cen\u00e1rio");
+        recomendar.setTooltip(new javafx.scene.control.Tooltip(ehEstacao
+                ? "Calcula pot\u00eancia, azimute, inclina\u00e7\u00e3o e altura para "
+                  + "esta esta\u00e7\u00e3o pegar o melhor sinal do AP dela."
+                : "Varre o terreno com v\u00e1rias alturas, azimutes e "
+                  + "inclina\u00e7\u00f5es e diz qual arranjo cobre mais ch\u00e3o. "
+                  + "Leva dezenas de varreduras \u2014 uns 20 s."));
+        Button usar = new Button(ehEstacao ? "Usar o recomendado" : "Usar a recomendada");
         usar.setDisable(true);
 
         final double[] recomendada = { Double.NaN };
+        final StationAim.Plano[] plano = { null };
+        final ApAim.Plano[] planoAp = { null };
+
         recomendar.setOnAction(e -> {
             if (!mapMode) {
                 saida.setText("A recomenda\u00e7\u00e3o precisa de um mapa base.");
                 return;
             }
+            if (ehEstacao) {
+                lerCampos.run();
+                recomendar.setDisable(true);
+                usar.setDisable(true);
+                saida.setText("Levantando o terreno at\u00e9 o AP...");
+                Task<StationAim.Plano> tp = new Task<>() {
+                    @Override protected StationAim.Plano call() {
+                        return StationAim.planejar(r, p, project, elevation);
+                    }
+                };
+                tp.setOnSucceeded(ev -> {
+                    recomendar.setDisable(false);
+                    StationAim.Plano pl = tp.getValue();
+                    plano[0] = pl.vale() ? pl : null;
+                    usar.setDisable(plano[0] == null || !pl.temMudanca());
+                    saida.setText(pl.vale() ? relatorioMira(pl) : pl.nota());
+                });
+                tp.setOnFailed(ev -> {
+                    recomendar.setDisable(false);
+                    Throwable ex = tp.getException();
+                    saida.setText("Falha ao recomendar: "
+                            + (ex == null ? "erro desconhecido" : ex.getMessage()));
+                });
+                Thread thp = new Thread(tp, "mira-estacao");
+                thp.setDaemon(true);
+                thp.start();
+                return;
+            }
             lerCampos.run();
             recomendar.setDisable(true);
             usar.setDisable(true);
-            saida.setText("Testando alturas... cada uma refaz a varredura inteira.");
+            saida.setText("Varrendo o cen\u00e1rio... cada teste refaz a varredura "
+                    + "inteira do terreno, e s\u00e3o dezenas.");
 
             BeamCoverage.Params prmR = new BeamCoverage.Params(
-                    Spinners.commit(minRssi, -70),
-                    Spinners.commit(ganhoLonge, par.gainDbi()),
-                    Spinners.commit(caboLonge, par.cableDb()),
-                    Spinners.commit(alturaRx, par.alturaM()),
-                    Spinners.commit(tetoKm, 30) * 1000,
+                    Spinners.lido(minRssi, -70),
+                    Spinners.lido(ganhoLonge, par.gainDbi()),
+                    Spinners.lido(caboLonge, par.cableDb()),
+                    Spinners.lido(alturaRx, par.alturaM()),
+                    Spinners.lido(tetoKm, 30) * 1000,
                     usarRelevo.isSelected());
-            double teto = r.getAntennaHeightM() + 60;
-
-            Task<BeamCoverage.Recomendacao> t = new Task<>() {
-                @Override protected BeamCoverage.Recomendacao call() {
-                    return BeamCoverage.recomendarAltura(r, p.getX(), p.getY(),
-                            elevation, worldPerM, prmR, teto, 7);
+            Task<ApAim.Plano> t = new Task<>() {
+                @Override protected ApAim.Plano call() {
+                    return ApAim.planejar(r, p.getX(), p.getY(), elevation, worldPerM,
+                            prmR, 60, par.origem(),
+                            // A varredura roda fora da thread do JavaFX: o
+                            // recado tem que voltar para ela antes de tocar
+                            // na tela.
+                            msg -> Platform.runLater(() -> saida.setText(msg)));
                 }
             };
             t.setOnSucceeded(ev -> {
                 recomendar.setDisable(false);
-                BeamCoverage.Recomendacao rec = t.getValue();
-                if (!rec.valid()) { saida.setText(rec.nota()); return; }
-                recomendada[0] = rec.recomendadaM();
-                usar.setDisable(Math.abs(rec.recomendadaM() - r.getAntennaHeightM()) < 0.01);
-
-                StringBuilder sb = new StringBuilder();
-                sb.append("ATE ONDE VALE SUBIR A ANTENA\n\n");
-                sb.append(String.format("%8s  %12s  %14s%n",
-                        "altura", "area c/ sinal", "alcance medio"));
-                for (BeamCoverage.Degrau d : rec.degraus()) {
-                    sb.append(String.format("%6.0f m  %9.2f km2  %11.0f m%s%n",
-                            d.alturaM(), d.areaM2() / 1e6, d.alcanceMedioM(),
-                            d.alturaM() == rec.recomendadaM() ? "   <-- recomendada" : ""));
-                }
-                sb.append('\n').append(rec.nota());
-                sb.append("\n\nA area e' a que REALMENTE recebe sinal: os buracos de "
-                        + "sombra do relevo nao entram. E' por isso que subir rende "
-                        + "tanto aqui e quase nada em terreno plano.");
-                saida.setText(sb.toString());
+                ApAim.Plano pl = t.getValue();
+                planoAp[0] = pl.vale() ? pl : null;
+                usar.setDisable(planoAp[0] == null || !pl.temMudanca());
+                saida.setText(pl.vale() ? relatorioCenario(pl) : pl.nota());
             });
             t.setOnFailed(ev -> {
                 recomendar.setDisable(false);
@@ -435,12 +480,35 @@ public final class BeamSimDialog {
                 saida.setText("Falha ao recomendar: "
                         + (ex == null ? "erro desconhecido" : ex.getMessage()));
             });
-            Thread th = new Thread(t, "recomenda-altura");
+            Thread th = new Thread(t, "cenario-ap");
             th.setDaemon(true);
             th.start();
         });
 
         usar.setOnAction(e -> {
+            if (planoAp[0] != null) {
+                for (ApAim.Eixo x : planoAp[0].eixos()) {
+                    if (!x.muda()) continue;
+                    if (x.campo().startsWith("Altura")) {
+                        altura.getValueFactory().setValue(x.melhor());
+                    } else if (x.campo().startsWith("Azimute")) {
+                        azimute.getValueFactory().setValue(x.melhor());
+                    } else if (x.campo().startsWith("Inclina")) {
+                        tilt.getValueFactory().setValue(x.melhor());
+                    }
+                }
+                usar.setDisable(true);
+                return;
+            }
+            if (plano[0] != null) {
+                StationAim.Plano pl = plano[0];
+                potencia.getValueFactory().setValue(pl.potenciaDbm());
+                azimute.getValueFactory().setValue(pl.azimuteDeg());
+                tilt.getValueFactory().setValue(pl.inclinacaoDeg());
+                if (!pl.semRelevo()) altura.getValueFactory().setValue(pl.alturaM());
+                usar.setDisable(true);
+                return;
+            }
             if (Double.isNaN(recomendada[0])) return;
             altura.getValueFactory().setValue(recomendada[0]);
             usar.setDisable(true);
@@ -482,6 +550,70 @@ public final class BeamSimDialog {
 
     // ------------------------ Apoio ------------------------
 
+    /**
+     * O plano de cen\u00e1rio de um AP em texto.
+     *
+     * Mostra a \u00e1rea ao lado de cada campo porque \u00e9 ela que justifica
+     * a sugest\u00e3o: "gire para 70\u00b0" n\u00e3o convence ningu\u00e9m a
+     * subir na torre; "gire para 70\u00b0 e cubra 16 km\u00b2 a mais" convence
+     * \u2014 e d\u00e1 para discordar com n\u00famero na m\u00e3o.
+     */
+    private static String relatorioCenario(ApAim.Plano pl) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("O QUE O TERRENO RECOMENDA PARA ESTE AP\n");
+        sb.append(String.format("(%d varreduras do relevo)%n%n", pl.varreduras()));
+
+        sb.append(String.format("%-12s %9s %10s %12s%n",
+                "campo", "hoje", "sugerido", "area"));
+        for (ApAim.Eixo x : pl.eixos()) {
+            sb.append(String.format("%-12s %8.1f%s %9.1f%s %8.2f km2  %s%n",
+                    x.campo(), x.atual(), x.unidade(), x.melhor(), x.unidade(),
+                    x.areaMelhorM2() / 1e6, x.muda()
+                        ? String.format("<-- mexer (%+.0f%%)", x.ganhoPct()) : ""));
+            sb.append("             ").append(x.porque()).append('\n');
+        }
+        sb.append('\n').append(pl.nota());
+        return sb.toString();
+    }
+
+    /**
+     * O plano de apontamento em texto.
+     *
+     * Mostra o valor de hoje ao lado do sugerido, inclusive quando sao
+     * iguais: "n\u00e3o mexa nisto" tamb\u00e9m \u00e9 resposta, e omitir a
+     * linha deixaria a d\u00favida de se o campo chegou a ser olhado. A coluna
+     * do porqu\u00ea existe para a tela nao virar or\u00e1culo \u2014 quem
+     * instala precisa poder discordar com conhecimento de causa.
+     */
+    private static String relatorioMira(StationAim.Plano pl) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("COMO APONTAR ESTA ESTA\u00c7\u00c3O\n");
+        sb.append(String.format("para %s, a %s de dist\u00e2ncia%n%n",
+                pl.parNome(), MapPane.formatRange(pl.distanciaM())));
+
+        sb.append(String.format("%-12s %10s %10s%n", "campo", "hoje", "sugerido"));
+        for (StationAim.Ajuste aj : pl.ajustes()) {
+            sb.append(String.format("%-12s %8.1f %s %8.1f %s  %s%n",
+                    aj.campo(), aj.atual(), aj.unidade(), aj.sugerido(), aj.unidade(),
+                    aj.muda() ? "<-- mexer" : ""));
+            sb.append("             ").append(aj.porque()).append('\n');
+        }
+
+        if (!Double.isNaN(pl.rssiPlanoDbm())) {
+            sb.append(String.format(
+                    "%nSinal estimado no AP: %.0f dBm hoje \u2192 %.0f dBm (%s)%n",
+                    pl.rssiAtualDbm(), pl.rssiPlanoDbm(),
+                    com.colmeia.radiomapper.rf.LinkBudget.quality(pl.rssiPlanoDbm())));
+        }
+        if (!Double.isNaN(pl.fresnelPct())) {
+            sb.append(String.format(
+                    "Fresnel livre: %.0f%% \u2192 %.0f%% (a regra de campo pede 60%%)%n",
+                    pl.fresnelPct(), pl.fresnelPlanoPct()));
+        }
+        sb.append('\n').append(pl.nota());
+        return sb.toString();
+    }
+
     private static HBox campo(Spinner<Double> sp, String unidade) {
         sp.setPrefWidth(88);
         sp.setEditable(true);
@@ -496,6 +628,10 @@ public final class BeamSimDialog {
         c.setId(o.getId());
         c.setName(o.getName());
         c.setRole(o.getRole());
+        // O uplink nao e' editavel aqui, mas e' por ele que se descobre para
+        // quem esta estacao aponta -- sem copia-lo, a recomendacao de
+        // apontamento perderia o AP informado a mao no cadastro.
+        c.setUplinkRadioId(o.getUplinkRadioId());
         c.setFrequencyMhz(o.getFrequencyMhz());
         c.setTxPowerDbm(o.getTxPowerDbm());
         c.setAntennaGainDbi(o.getAntennaGainDbi());

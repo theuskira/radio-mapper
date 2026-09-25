@@ -79,6 +79,40 @@ public final class Terrain3DView {
      *
      * @param faixas empacotamento do mapa: dBm na posição 0, polígono adiante
      */
+    /**
+     * A janela aberta, para quem a abriu poder alimentá-la.
+     *
+     * O terreno 3D mostra o alcance simulado. Enquanto se mexe nos parâmetros
+     * na janela de Alcance, o 3D ficava com o desenho do primeiro cálculo —
+     * e comparar duas alturas exigia fechar e reabrir a cena inteira, que
+     * custa segundos e perde o ângulo em que se estava olhando.
+     */
+    public static final class Janela {
+        private Stage stage;
+        private java.util.function.Consumer<Object[]> alimentar;
+        private double[] vista = { 89, 0 };
+
+        /** Inclinação e giro em que a cena está, para uma reabertura casar. */
+        public double[] angulo() { return new double[] { vista[0], vista[1] }; }
+
+        /** A janela ainda está aberta? */
+        public boolean aberta() { return stage != null && stage.isShowing(); }
+
+        /**
+         * Troca as coberturas e os alcances, mantendo o ângulo e o que está
+         * marcado. Ignorada em silêncio se a janela já foi fechada.
+         */
+        public void atualizar(List<Cobertura> coberturas,
+                              double alcanceA, double alcanceB,
+                              String origemA, String origemB) {
+            if (!aberta() || alimentar == null) return;
+            alimentar.accept(new Object[] {
+                    coberturas, alcanceA, alcanceB, origemA, origemB });
+        }
+
+        public void fechar() { if (aberta()) stage.close(); }
+    }
+
     public record Cobertura(String nome,
                             com.colmeia.radiomapper.rf.BeamCoverage.Cobertura grade) {}
 
@@ -133,8 +167,31 @@ public final class Terrain3DView {
      * de ~10 px, um mastro de ~3 px e uma linha de ~4 px: visíveis de relance,
      * e finos o bastante para se enxergar o terreno por baixo.
      */
-    private static final double ESFERA = 1 / 170.0;
-    private static final double MASTRO = 1 / 500.0;
+    /**
+     * O equipamento, em METROS de verdade.
+     *
+     * Antes o mastro e a antena eram frações da cena: numa área de 1,3 km a
+     * "antena" saía com 15 m de diâmetro e a haste com 5 m de espessura. Isso
+     * não é torre nenhuma — é um símbolo do tamanho de um prédio, e quem
+     * olhava o desenho não podia confiar no que via.
+     *
+     * Agora são as medidas do objeto: uma caixa de 40 cm para o rádio e um
+     * tubo de 8 cm para a haste. A consequência é honesta e precisa ser dita:
+     * numa cena de 1,3 km cada pixel vale cerca de 1,5 m, então o equipamento
+     * é menor que um pixel e só aparece ao aproximar. Quem localiza o ponto de
+     * longe é a etiqueta flutuante, que é desenhada na tela e não finge ser
+     * equipamento.
+     */
+    private static final double RADIO_M = 0.40;
+    private static final double HASTE_M = 0.08;
+
+    /**
+     * A linha do enlace continua sendo símbolo, e não objeto.
+     *
+     * Um enlace de rádio não tem espessura física: desenhá-lo "em tamanho
+     * real" seria desenhá-lo com zero. O que se escolhe aqui é só quão
+     * visível ele é, como fração da cena.
+     */
     private static final double LINHA = 1 / 420.0;
 
     /**
@@ -144,11 +201,11 @@ public final class Terrain3DView {
      *                   que a rede entrega ali, e é diferente de olhar um
      *                   rádio de cada vez. Null ou vazio desenha só o relevo.
      */
-    public static void show(Window owner, ElevationChain elevation,
+    public static Janela show(Window owner, ElevationChain elevation,
                             NetworkPoint a, Radio radioA,
                             NetworkPoint b, Radio radioB,
                             List<Cobertura> coberturas) {
-        show(owner, elevation, a, radioA, b, radioB, coberturas, null, null, null);
+        return show(owner, elevation, a, radioA, b, radioB, coberturas, null, null, null);
     }
 
     /**
@@ -159,14 +216,14 @@ public final class Terrain3DView {
      *             é de outra data e de resolução bem mais grossa.
      * @param pos  onde a ortofoto se apoia no mundo (canto noroeste e tamanho)
      */
-    public static void show(Window owner, ElevationChain elevation,
+    public static Janela show(Window owner, ElevationChain elevation,
                             NetworkPoint a, Radio radioA,
                             NetworkPoint b, Radio radioB,
                             List<Cobertura> coberturas, TileSource base,
                             List<Image> ortos,
                             List<com.colmeia.radiomapper.model.ImageLayer> camadas) {
-        show(owner, elevation, a, radioA, b, radioB, coberturas, base, ortos, camadas,
-             null, 0, 0);
+        return show(owner, elevation, a, radioA, b, radioB, coberturas, base, ortos,
+                    camadas, null, 0, 0, "", "", null);
     }
 
     /**
@@ -176,15 +233,15 @@ public final class Terrain3DView {
      *                      resolução — e no 3D, onde tudo vira a mesma
      *                      superfície lisa, não há outro jeito de distinguir.
      */
-    public static void show(Window owner, ElevationChain elevation,
+    public static Janela show(Window owner, ElevationChain elevation,
                             NetworkPoint a, Radio radioA,
                             NetworkPoint b, Radio radioB,
                             List<Cobertura> coberturas, TileSource base,
                             List<Image> ortos,
                             List<com.colmeia.radiomapper.model.ImageLayer> camadas,
                             List<double[]> contornoNuvem) {
-        show(owner, elevation, a, radioA, b, radioB, coberturas, base, ortos, camadas,
-             contornoNuvem, 0, 0);
+        return show(owner, elevation, a, radioA, b, radioB, coberturas, base, ortos,
+                    camadas, contornoNuvem, 0, 0, "", "", null);
     }
 
     /**
@@ -195,16 +252,23 @@ public final class Terrain3DView {
      *                 48 seria pior que n\u00e3o desenhar. 0 = sem feixe.
      * @param alcanceB o mesmo, para o r\u00e1dio B
      */
-    public static void show(Window owner, ElevationChain elevation,
+    public static Janela show(Window owner, ElevationChain elevation,
                             NetworkPoint a, Radio radioA,
                             NetworkPoint b, Radio radioB,
                             List<Cobertura> coberturas, TileSource base,
                             List<Image> ortos,
                             List<com.colmeia.radiomapper.model.ImageLayer> camadas,
                             List<double[]> contornoNuvem,
-                            double alcanceA, double alcanceB) {
+                            double alcanceA, double alcanceB,
+                            String origemA, String origemB,
+                            double[] anguloInicial) {
 
-        if (a == null) return;
+        Janela janela = new Janela();
+        if (a == null) return janela;
+        if (anguloInicial != null && anguloInicial.length == 2) {
+            janela.vista[0] = anguloInicial[0];
+            janela.vista[1] = anguloInicial[1];
+        }
 
         // Caixa a modelar: os dois pontos com folga, ou um quadrado em volta
         // do ponto único.
@@ -227,6 +291,7 @@ public final class Terrain3DView {
         minY = cy - meio; maxY = cy + meio;
 
         Stage stage = new Stage();
+        janela.stage = stage;
         if (owner != null) stage.initOwner(owner);
         stage.setTitle("Terreno em 3D — " + a.getName()
                 + (b == null ? "" : "  ↔  " + b.getName()));
@@ -248,7 +313,7 @@ public final class Terrain3DView {
         // qualidade refaz tudo, e voltar a olhar de outro angulo depois disso
         // seria irritante.
         final Qualidade[] qual = { Settings.terrainQuality() };
-        final double[] vista = { 89, 0 };
+        final double[] vista = janela.vista;
         final Runnable[] refazer = { () -> {} };
 
         refazer[0] = () -> {
@@ -305,7 +370,7 @@ public final class Terrain3DView {
             }
             montar(stage, raiz, alt, LADO, fMinX, fMinY, fMaxX, fMaxY, a, radioA, b, radioB,
                    coberturas, imagem[0], contornoNuvem, qual, vista, refazer,
-                   alcanceA, alcanceB);
+                   alcanceA, alcanceB, origemA, origemB, janela);
         });
         amostrar.setOnFailed(e -> {
             Throwable ex = amostrar.getException();
@@ -318,6 +383,7 @@ public final class Terrain3DView {
         t.start();
         };
         refazer[0].run();
+        return janela;
     }
 
     // ------------------------ Cena ------------------------
@@ -328,7 +394,8 @@ public final class Terrain3DView {
                                List<Cobertura> coberturas, WritableImage foto,
                                List<double[]> contornoNuvem,
                                Qualidade[] qual, double[] vista, Runnable[] refazer,
-                               double alcanceA, double alcanceB) {
+                               double alcanceA, double alcanceB,
+                               String origemA, String origemB, Janela janela) {
 
         double k = Mercator.groundScaleAt(Mercator.latOfWorldY((minY + maxY) / 2));
         double larguraM = (maxX - minX) * k;
@@ -349,7 +416,13 @@ public final class Terrain3DView {
         // Quais coberturas estao ligadas agora. Muda com as caixas de selecao
         // da propria janela, e cada mudanca refaz a textura e a classificacao
         // dos vertices — barato o bastante para responder na hora.
-        final java.util.Set<Cobertura> ligadas = new java.util.LinkedHashSet<>();
+        // Marcadas por NOME, e nao pelo objeto: ao chegar uma cobertura
+        // recalculada o objeto e' outro, e guardar a referencia perderia o que
+        // o usuario tinha ligado bem na hora em que ele quer comparar.
+        final java.util.Set<String> ligadas = new java.util.LinkedHashSet<>();
+        final List<Cobertura>[] coberturasAgora = new List[] { coberturas };
+        final double[] alcances = { alcanceA, alcanceB };
+        final String[] origens = { origemA, origemB };
         final boolean[] marcarNuvem = { false };
         final int[] linhas = { 1 };
         final int[][] faixaPorVertice = { new int[lado * lado] };
@@ -474,32 +547,29 @@ public final class Terrain3DView {
                 + "Isto muda s\u00f3 o desenho \u2014 o c\u00e1lculo de obstru\u00e7\u00e3o "
                 + "e de alcance continua usando a superf\u00edcie inteira."));
 
-        // O cone que sai da antena. Separado da linha do enlace: a linha
-        // liga duas pontas, o cone mostra por onde o sinal sai de UMA.
-        boolean temFeixe = (radioA != null && alcanceA > 0)
-                || (radioB != null && alcanceB > 0);
-        CheckBox mostrarFeixe = new CheckBox("Feixe em 3D");
-        mostrarFeixe.setStyle("-fx-text-fill: #ddd;");
-        mostrarFeixe.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
-        mostrarFeixe.setDisable(!temFeixe);
-        StringBuilder quanto = new StringBuilder();
-        if (radioA != null && alcanceA > 0) {
-            quanto.append(a.getName()).append(": ")
-                  .append(MapPane.formatRange(alcanceA));
-        }
-        if (radioB != null && alcanceB > 0) {
-            if (quanto.length() > 0) quanto.append("   ·   ");
-            quanto.append(b.getName()).append(": ")
-                  .append(MapPane.formatRange(alcanceB));
-        }
-        mostrarFeixe.setTooltip(new javafx.scene.control.Tooltip(temFeixe
-                ? "Cone saindo da ponta da antena, com a abertura vertical e a "
-                  + "inclinação cadastradas.\n" + quanto
-                  + "\n\nA vertical do cone é esticada junto com a do terreno: "
-                  + "sem isso ele apontaria para um morro que, na tela, está "
-                  + "noutro lugar."
-                : "Sem alcance para desenhar: informe o alcance no cadastro, ou "
-                  + "rode Alcance para o programa apurar."));
+        // Um feixe por radio, cada um com a sua cor e ligado por conta
+        // propria. Com os dois juntos numa caixa so nao dava para olhar um de
+        // cada vez, que e' o que se faz quando se quer entender qual dos dois
+        // esta batendo no morro.
+        Label rotFeixe = new Label("Feixe 3D:");
+        rotFeixe.setStyle("-fx-text-fill: #ddd;");
+        rotFeixe.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+
+        CheckBox feixeA = caixaDeFeixe(a, radioA, alcanceA, origemA, "#29b6f6");
+        CheckBox feixeB = caixaDeFeixe(b, radioB, alcanceB, origemB, "#ffa726");
+        javafx.scene.control.ColorPicker corA = seletorDeCor(radioA, "#29b6f6");
+        javafx.scene.control.ColorPicker corB = seletorDeCor(radioB, "#ffa726");
+        corA.setDisable(feixeA.isDisable());
+        corB.setDisable(feixeB.isDisable());
+
+        // Opacidade separada da do mapa: no 3D o feixe e' atravessado pelo
+        // olhar, e o valor que fica bom numa mancha plana deixa aqui uma
+        // parede solida por cima do relevo.
+        Slider opacFeixe = new Slider(0.05, 0.9, 0.18);
+        opacFeixe.setPrefWidth(90);
+        opacFeixe.setTooltip(new javafx.scene.control.Tooltip(
+                "Transpar\u00eancia do feixe 3D"));
+        opacFeixe.setDisable(feixeA.isDisable() && feixeB.isDisable());
 
         CheckBox mostrarLinha = new CheckBox("Linha do enlace");
         mostrarLinha.setSelected(b != null);
@@ -536,20 +606,25 @@ public final class Terrain3DView {
             double[] usar = semMato.isSelected() ? altNu : alt;
             terreno.setMesh(malha(usar, lado, larguraM, profundM, baseH, ex,
                     faixaPorVertice[0], linhas[0], foto != null));
-            exageroTxt.setText(String.format("vertical %.0f×", ex));
+            exageroTxt.setText(rotuloExagero(ex));
 
             conteudo.getChildren().removeIf(n -> n != terreno);
             List<Node> novos = torres(alt, lado, minX, minY, maxX, maxY,
-                    mostrarFeixe.isSelected(), alcanceA, alcanceB,
+                    feixeA.isSelected(), feixeB.isSelected(), alcances[0], alcances[1],
+                    corA.getValue(), corB.getValue(), opacFeixe.getValue(),
                     larguraM, profundM, baseH, ex,
                     escalaSimbolo, a, radioA, b, radioB, mostrarLinha.isSelected());
             conteudo.getChildren().addAll(novos);
 
             // As esferas entram na ordem A, B — e sao elas que marcam o topo.
+            // As etiquetas seguem a CAIXA do radio -- entram na ordem A, B.
+            // Enquanto o topo era uma esfera, era ela que fazia esse papel;
+            // trocar o simbolo pelo equipamento de verdade deixou as etiquetas
+            // sem nada a seguir, e elas sumiram da tela.
             marcas[0] = marcas[1] = null;
             int achadas = 0;
             for (Node n : novos) {
-                if (n instanceof Sphere && achadas < 2) marcas[achadas++] = n;
+                if (n instanceof Box && achadas < 2) marcas[achadas++] = n;
             }
             Platform.runLater(() -> aoMudarVista[0].run());
         };
@@ -572,8 +647,14 @@ public final class Terrain3DView {
             aoMudarVista[0].run();
         });
         bEnquadrar.setOnAction(e -> {
+            // O pivo volta ao centro junto: deixa-lo no ultimo ponto clicado
+            // faria a cena saltar ao zerar o deslocamento.
+            for (Rotate r : new Rotate[] { rotX, rotY }) {
+                r.setPivotX(0); r.setPivotY(0); r.setPivotZ(0);
+            }
             desloc.setTranslateX(0);
             desloc.setTranslateY(0);
+            desloc.setTranslateZ(0);
             cam.setTranslateZ(-dist);
             aoMudarVista[0].run();
         });
@@ -589,7 +670,10 @@ public final class Terrain3DView {
         Runnable aplicarCobertura = () -> {
             List<com.colmeia.radiomapper.rf.BeamCoverage.Cobertura> ativas =
                     new java.util.ArrayList<>();
-            for (Cobertura cb : ligadas) ativas.add(cb.grade());
+            for (Cobertura cb : coberturasAgora[0] == null ? List.<Cobertura>of()
+                                                           : coberturasAgora[0]) {
+                if (ligadas.contains(cb.nome())) ativas.add(cb.grade());
+            }
             double[] niveis = niveisDe(ativas);
             faixaPorVertice[0] = coberturaPorVertice(ativas, lado, niveis,
                     minX, minY, maxX, maxY);
@@ -632,27 +716,37 @@ public final class Terrain3DView {
         // sair da tela.
         HBox caixas = new HBox(10);
         caixas.setAlignment(Pos.CENTER_LEFT);
-        if (coberturas != null && !coberturas.isEmpty()) {
-            Label rot = new Label("Alcance:");
-            rot.setStyle("-fx-text-fill: #ddd;");
-            rot.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
-            caixas.getChildren().add(rot);
-            for (Cobertura cb : coberturas) {
-                CheckBox cx = new CheckBox(cb.nome());
-                cx.setStyle("-fx-text-fill: #ddd;");
-                cx.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
-                cx.selectedProperty().addListener((o, x, y) -> {
-                    if (y) ligadas.add(cb); else ligadas.remove(cb);
-                    aplicarCobertura.run();
-                });
-                caixas.getChildren().add(cx);
+
+        // Refeita a cada atualizacao: os radios podem ser os mesmos e as
+        // grades outras, ou pode ter aparecido um alcance que nao existia
+        // quando esta janela abriu.
+        Runnable montarCaixasDeAlcance = () -> {
+            caixas.getChildren().clear();
+            List<Cobertura> agora = coberturasAgora[0];
+            if (agora != null && !agora.isEmpty()) {
+                Label rot = new Label("Alcance:");
+                rot.setStyle("-fx-text-fill: #ddd;");
+                rot.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+                caixas.getChildren().add(rot);
+                for (Cobertura cb : agora) {
+                    CheckBox cx = new CheckBox(cb.nome());
+                    cx.setStyle("-fx-text-fill: #ddd;");
+                    cx.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+                    cx.setSelected(ligadas.contains(cb.nome()));
+                    cx.selectedProperty().addListener((o, x, y) -> {
+                        if (y) ligadas.add(cb.nome()); else ligadas.remove(cb.nome());
+                        aplicarCobertura.run();
+                    });
+                    caixas.getChildren().add(cx);
+                }
+            } else {
+                Label sem = new Label("Nenhum alcance simulado para estes r\u00e1dios "
+                        + "\u2014 use Alcance no painel lateral.");
+                sem.setStyle("-fx-text-fill: #8a93a0; -fx-font-size: 11;");
+                caixas.getChildren().add(sem);
             }
-        } else {
-            Label sem = new Label("Nenhum alcance simulado para estes r\u00e1dios \u2014 "
-                    + "use Alcance no painel lateral.");
-            sem.setStyle("-fx-text-fill: #8a93a0; -fx-font-size: 11;");
-            caixas.getChildren().add(sem);
-        }
+        };
+        montarCaixasDeAlcance.run();
 
         // Onde a altitude vem da nuvem, e onde vem do relevo global. Em 3D as
         // duas viram a mesma superficie lisa; sem a marca nao ha como saber
@@ -685,12 +779,28 @@ public final class Terrain3DView {
         qualidade.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
         semMato.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
 
-        mostrarFeixe.selectedProperty().addListener((o, x, y) -> reconstruir.run());
+        // Os textos e os limites das caixas de feixe dependem do alcance,
+        // que muda quando a varredura e' refeita.
+        Runnable atualizarFeixes = () -> {
+            aplicarFeixe(feixeA, corA, a, radioA, alcances[0], origens[0]);
+            aplicarFeixe(feixeB, corB, b, radioB, alcances[1], origens[1]);
+            opacFeixe.setDisable(feixeA.isDisable() && feixeB.isDisable());
+        };
+
+        feixeA.selectedProperty().addListener((o, x, y) -> reconstruir.run());
+        feixeB.selectedProperty().addListener((o, x, y) -> reconstruir.run());
+        corA.valueProperty().addListener((o, x, y) -> reconstruir.run());
+        corB.valueProperty().addListener((o, x, y) -> reconstruir.run());
+        opacFeixe.valueProperty().addListener((o, x, y) -> reconstruir.run());
 
         javafx.scene.layout.FlowPane barra = new javafx.scene.layout.FlowPane(10, 6,
                 rotQualidade, qualidade,
                 new Separator(javafx.geometry.Orientation.VERTICAL),
-                rotExagero, exagero, exageroTxt, semMato, mostrarFeixe, mostrarLinha,
+                rotExagero, exagero, exageroTxt, semMato,
+                new Separator(javafx.geometry.Orientation.VERTICAL),
+                rotFeixe, feixeA, corA, feixeB, corB, opacFeixe,
+                new Separator(javafx.geometry.Orientation.VERTICAL),
+                mostrarLinha,
                 new Separator(javafx.geometry.Orientation.VERTICAL),
                 bDeCima, bInclinada, bEnquadrar, dica);
         barra.setAlignment(Pos.CENTER_LEFT);
@@ -772,6 +882,31 @@ public final class Terrain3DView {
 
         sincronizarEixos[0] = sincronizarSliders;
 
+        // Alimentacao vinda de fora: a janela de Alcance recalcula e manda
+        // o resultado para ca, sem fechar nem reenquadrar a cena.
+        if (janela != null) {
+            janela.alimentar = dados -> {
+                @SuppressWarnings("unchecked")
+                List<Cobertura> novas = (List<Cobertura>) dados[0];
+                coberturasAgora[0] = novas;
+                alcances[0] = (Double) dados[1];
+                alcances[1] = (Double) dados[2];
+                origens[0] = (String) dados[3];
+                origens[1] = (String) dados[4];
+
+                // Nome que sumiu deixa de estar ligado, senao a selecao
+                // guardaria um radio que nao esta mais na lista.
+                java.util.Set<String> vivos = new java.util.HashSet<>();
+                if (novas != null) for (Cobertura c : novas) vivos.add(c.nome());
+                ligadas.retainAll(vivos);
+
+                montarCaixasDeAlcance.run();
+                atualizarFeixes.run();
+                aplicarCobertura.run();
+                reconstruir.run();
+            };
+        }
+
         // A primeira montagem precisa das duas: aplicarCobertura define a
         // textura (sem ela o material fica sem mapa e a malha sai cinza) e
         // reconstruir cria a malha. Depois daqui, com foto, trocar a cobertura
@@ -804,7 +939,7 @@ public final class Terrain3DView {
             sincronizarEixos[0].run();
         };
 
-        instalarOrbita(sub, rotX, rotY, cam, dist, desloc, sub, aoMudarVista[0]);
+        instalarOrbita(sub, rotX, rotY, cam, dist, desloc, pivo, sub, aoMudarVista[0]);
         instalarBola(bola, rotX, rotY, travado, sobre, aoMudarVista[0]);
 
         Runnable posicionarBola = () -> {
@@ -849,7 +984,7 @@ public final class Terrain3DView {
      */
     private static void instalarOrbita(SubScene sub, Rotate rotX, Rotate rotY,
                                        PerspectiveCamera cam, double distInicial,
-                                       Group desloc, SubScene medida,
+                                       Group desloc, Group pivo, SubScene medida,
                                        Runnable aoMover) {
         final double[] ancora = new double[2];
         final double[] angulo = { rotX.getAngle(), rotY.getAngle() };
@@ -857,13 +992,14 @@ public final class Terrain3DView {
         final boolean[] deslocando = { false };
 
         sub.setOnMousePressed(ev -> {
+            deslocando[0] = ev.isMiddleButtonDown();
+            if (!deslocando[0]) girarEmTornoDe(ev, rotX, rotY, pivo, desloc);
             ancora[0] = ev.getSceneX();
             ancora[1] = ev.getSceneY();
             angulo[0] = rotX.getAngle();
             angulo[1] = rotY.getAngle();
             pan[0] = desloc.getTranslateX();
             pan[1] = desloc.getTranslateY();
-            deslocando[0] = ev.isMiddleButtonDown();
             sub.setCursor(deslocando[0] ? javafx.scene.Cursor.MOVE : javafx.scene.Cursor.DEFAULT);
         });
         sub.setOnMouseDragged(ev -> {
@@ -922,6 +1058,68 @@ public final class Terrain3DView {
 
     private static double limitarInclinacao(double v) {
         return Math.max(INCL_MIN, Math.min(INCL_MAX, v));
+    }
+
+    /** Reaplica texto, dica e disponibilidade quando o alcance muda. */
+    private static void aplicarFeixe(CheckBox cx, javafx.scene.control.ColorPicker cor,
+                                     NetworkPoint p, Radio r, double alcanceM,
+                                     String origem) {
+        String nome = p == null ? "\u2014" : p.getName();
+        boolean pode = r != null && alcanceM > 0;
+        cx.setDisable(!pode);
+        cor.setDisable(!pode);
+        if (!pode) cx.setSelected(false);
+        cx.setTooltip(new javafx.scene.control.Tooltip(pode
+                ? "Cone saindo da antena de " + nome + ".\n"
+                  + "Vai at\u00e9 " + MapPane.formatRange(alcanceM)
+                  + " (" + origem + "), ou at\u00e9 esbarrar no relevo \u2014 "
+                  + "o que vier primeiro."
+                : r == null ? "Sem r\u00e1dio deste lado"
+                            : "Sem alcance: informe frequ\u00eancia, ganho e "
+                              + "pot\u00eancia, ou rode Alcance"));
+    }
+
+    /** A caixa que liga o feixe de um r\u00e1dio, ou desabilitada com o motivo. */
+    private static CheckBox caixaDeFeixe(NetworkPoint p, Radio r, double alcanceM,
+                                         String origem, String corPadrao) {
+        String nome = p == null ? "\u2014" : p.getName();
+        CheckBox cx = new CheckBox(nome);
+        cx.setStyle("-fx-text-fill: #ddd;");
+        cx.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+        boolean pode = r != null && alcanceM > 0;
+        cx.setDisable(!pode);
+        cx.setTooltip(new javafx.scene.control.Tooltip(pode
+                ? "Cone saindo da antena de " + nome + ".\n"
+                  + "Vai at\u00e9 " + MapPane.formatRange(alcanceM)
+                  + " (" + origem + "), ou at\u00e9 esbarrar no relevo \u2014 "
+                  + "o que vier primeiro."
+                : r == null ? "Sem r\u00e1dio deste lado"
+                            : "Sem alcance: informe frequ\u00eancia, ganho e "
+                              + "pot\u00eancia, ou rode Alcance"));
+        return cx;
+    }
+
+    /** Cor do feixe: a do r\u00e1dio quando houver, sen\u00e3o a da ponta. */
+    private static javafx.scene.control.ColorPicker seletorDeCor(Radio r, String padrao) {
+        String c = r == null ? "" : r.getBeamColor();
+        javafx.scene.control.ColorPicker cp = new javafx.scene.control.ColorPicker(
+                Color.web(c == null || c.isBlank() ? padrao : c));
+        cp.setPrefWidth(44);
+        cp.setTooltip(new javafx.scene.control.Tooltip("Cor deste feixe no 3D"));
+        return cp;
+    }
+
+    /**
+     * O r\u00f3tulo do exagero, dizendo o que o n\u00famero significa.
+     *
+     * 1x \u00e9 a geometria VERDADEIRA: o morro tem na tela a propor\u00e7\u00e3o
+     * que tem no chao. Acima disso o relevo est\u00e1 esticado para se
+     * enxergar melhor, e o que se v\u00ea deixa de ser a forma real \u2014 o
+     * que importa saber antes de concluir que um morro corta um enlace.
+     */
+    private static String rotuloExagero(double v) {
+        return v <= 1.01 ? "vertical 1\u00d7 (real)"
+                         : String.format("vertical %.0f\u00d7 (esticada)", v);
     }
 
     private static Button botao(String texto, String dica) {
@@ -1054,6 +1252,49 @@ public final class Terrain3DView {
             case "Y-": return "de sul";
             default:   return "";
         }
+    }
+
+    /**
+     * Passa a girar em torno do ponto do terreno que foi clicado.
+     *
+     * <h3>Por que isto importa</h3>
+     * Girando sempre pelo centro da cena, quem está com zoom num canto vê
+     * aquele canto sair voando da tela ao primeiro arrasto — e precisa
+     * reenquadrar para voltar ao que estava olhando. Pegando o ponto sob o
+     * cursor, a cena gira em volta dele e o que interessa fica parado.
+     *
+     * <h3>Por que a compensação</h3>
+     * Mudar o pivô de uma rotação que já tem ângulo move tudo de lugar na
+     * hora: o mesmo ponto passa a ser mapeado para outro lugar da tela. Aqui
+     * se mede onde o ponto está ANTES e DEPOIS da troca e se desloca a cena
+     * pela diferença, de modo que a troca de pivô não se veja — o usuário só
+     * percebe o giro fazendo o que ele espera.
+     */
+    private static void girarEmTornoDe(javafx.scene.input.MouseEvent ev,
+                                       Rotate rotX, Rotate rotY,
+                                       Group pivo, Group desloc) {
+        var alvo = ev.getPickResult();
+        if (alvo == null || alvo.getIntersectedNode() == null) return;
+        javafx.geometry.Point3D p = alvo.getIntersectedPoint();
+        if (p == null) return;
+
+        // Do espaco do no atingido para o espaco em que as rotacoes agem.
+        javafx.geometry.Point3D noPivo =
+                pivo.sceneToLocal(alvo.getIntersectedNode().localToScene(p));
+        if (noPivo == null) return;
+
+        javafx.geometry.Point3D antes = pivo.localToScene(noPivo);
+        for (Rotate r : new Rotate[] { rotX, rotY }) {
+            r.setPivotX(noPivo.getX());
+            r.setPivotY(noPivo.getY());
+            r.setPivotZ(noPivo.getZ());
+        }
+        javafx.geometry.Point3D depois = pivo.localToScene(noPivo);
+        if (antes == null || depois == null) return;
+
+        desloc.setTranslateX(desloc.getTranslateX() + antes.getX() - depois.getX());
+        desloc.setTranslateY(desloc.getTranslateY() + antes.getY() - depois.getY());
+        desloc.setTranslateZ(desloc.getTranslateZ() + antes.getZ() - depois.getZ());
     }
 
     /** Qual ponta do gizmo está sob o cursor, ou null. */
@@ -1781,7 +2022,9 @@ public final class Terrain3DView {
      * @param alcanceM até onde levar o feixe, em metros de chão
      */
     private static Node feixe3D(Point3D apice, Radio r, double alcanceM,
-                                double exagero, Color cor) {
+                                double exagero, Color cor, double opacidade,
+                                double[] alt, int lado,
+                                double larguraM, double profundM, double baseH) {
         if (apice == null || r == null || alcanceM <= 0) return null;
 
         double larguraH = r.getBeamWidthDeg();
@@ -1806,8 +2049,10 @@ public final class Terrain3DView {
             float[] pts = new float[(2 * N + 1) * 3];
             for (int k = 0; k < N; k++) {
                 double a = 2 * Math.PI * k / N;
-                pontoDoFeixe(pts, k, apice, a, tilt + meiaV, alcanceM, exagero);
-                pontoDoFeixe(pts, N + k, apice, a, tilt - meiaV, alcanceM, exagero);
+                pontoDoFeixe(pts, k, apice, a, tilt + meiaV, alcanceM, exagero,
+                             alt, lado, larguraM, profundM, baseH);
+                pontoDoFeixe(pts, N + k, apice, a, tilt - meiaV, alcanceM, exagero,
+                             alt, lado, larguraM, profundM, baseH);
             }
             pts[2 * N * 3] = (float) apice.getX();
             pts[2 * N * 3 + 1] = (float) apice.getY();
@@ -1820,12 +2065,19 @@ public final class Terrain3DView {
             // tamanho do alcance, e um omni de 1 km cobria a cena inteira com
             // uma chapa translucida. A faixa sozinha mostra o que interessa --
             // a que altura o sinal sai e quanto ele abre.
-            int[] faces = new int[N * 2 * 6];
+            // Cada triangulo entra nas DUAS orientacoes, e o desenho descarta
+            // a face de tras. Assim a faixa aparece de qualquer lado -- por
+            // dentro e por fora -- mas so UMA camada e' pintada em cada ponto.
+            // Desenhando as duas faces, as camadas se somavam e a cor saturava
+            // acima da propria cor do feixe: a transparencia deixava de valer.
+            int[] faces = new int[N * 4 * 6];
             int f = 0;
             for (int k = 0; k < N; k++) {
                 int k2 = (k + 1) % N;
                 f = tri(faces, f, k, N + k, k2);
+                f = tri(faces, f, k2, N + k, k);
                 f = tri(faces, f, k2, N + k, N + k2);
+                f = tri(faces, f, N + k2, N + k, k2);
             }
             m.getPoints().setAll(pts);
             m.getFaces().setAll(java.util.Arrays.copyOf(faces, f));
@@ -1853,10 +2105,16 @@ public final class Terrain3DView {
                 double dz = u[2] + th * h[2] + tv * v[2];
                 double n = Math.sqrt(dx * dx + dy * dy + dz * dz);
                 if (n <= 0) n = 1;
-                pts[(k + 1) * 3] = (float) (apice.getX() + dx / n * alcanceM);
-                pts[(k + 1) * 3 + 1] =
-                        (float) (apice.getY() + dy / n * alcanceM * exagero);
-                pts[(k + 1) * 3 + 2] = (float) (apice.getZ() + dz / n * alcanceM);
+                dx /= n; dy /= n; dz /= n;
+                // Cada borda anda ate esbarrar no relevo. Sem isto o cone
+                // terminava no ar, a uma distancia que ninguem enxerga no
+                // desenho, e nao dizia o que se quer saber: onde o feixe
+                // encosta no chao e onde passa por cima.
+                double t = ateOTerreno(apice, dx, dy, dz, alcanceM, exagero,
+                                       alt, lado, larguraM, profundM, baseH);
+                pts[(k + 1) * 3] = (float) (apice.getX() + dx * t);
+                pts[(k + 1) * 3 + 1] = (float) (apice.getY() + dy * t * exagero);
+                pts[(k + 1) * 3 + 2] = (float) (apice.getZ() + dz * t);
             }
 
             int[] faces = new int[N * 2 * 6];
@@ -1878,13 +2136,14 @@ public final class Terrain3DView {
         // -- que e' opaco -- ainda pintava por cima do que houvesse atras. Sem
         // ele e com alfa baixo, o feixe vira volume e o relevo continua
         // visivel atraves dele, que e' o ponto de desenhar os dois juntos.
-        PhongMaterial mat = new PhongMaterial(cor.deriveColor(0, 1, 1, 0.16));
+        PhongMaterial mat = new PhongMaterial(
+                cor.deriveColor(0, 1, 1, Math.max(0.02, Math.min(1, opacidade))));
         mat.setSpecularColor(Color.TRANSPARENT);
         mv.setMaterial(mat);
         // Sem descartar face: olha-se o feixe de fora e de dentro, e com uma
         // das faces fora ele desaparece pela metade ao girar a cena. Em troca
         // as duas paredes se somam na transparencia, e por isso ela e' baixa.
-        mv.setCullFace(javafx.scene.shape.CullFace.NONE);
+        mv.setCullFace(javafx.scene.shape.CullFace.BACK);
         mv.setMouseTransparent(true);
         return mv;
     }
@@ -1892,11 +2151,82 @@ public final class Terrain3DView {
     /** Um ponto da borda do feixe, dado o azimute e a elevação. */
     private static void pontoDoFeixe(float[] pts, int i, Point3D apice,
                                      double az, double elev, double alcanceM,
-                                     double exagero) {
+                                     double exagero, double[] alt, int lado,
+                                     double larguraM, double profundM, double baseH) {
         double ce = Math.cos(elev);
-        pts[i * 3] = (float) (apice.getX() + Math.sin(az) * ce * alcanceM);
-        pts[i * 3 + 1] = (float) (apice.getY() - Math.sin(elev) * alcanceM * exagero);
-        pts[i * 3 + 2] = (float) (apice.getZ() + Math.cos(az) * ce * alcanceM);
+        double dx = Math.sin(az) * ce, dy = -Math.sin(elev), dz = Math.cos(az) * ce;
+        double t = ateOTerreno(apice, dx, dy, dz, alcanceM, exagero,
+                               alt, lado, larguraM, profundM, baseH);
+        pts[i * 3] = (float) (apice.getX() + dx * t);
+        pts[i * 3 + 1] = (float) (apice.getY() + dy * t * exagero);
+        pts[i * 3 + 2] = (float) (apice.getZ() + dz * t);
+    }
+
+    /**
+     * Quanto o raio anda antes de encostar no relevo.
+     *
+     * <h3>Por que marchar no espaço da CENA</h3>
+     * A vertical do desenho está esticada. Marchar na geometria verdadeira
+     * daria o ponto certo no mundo e o ponto errado na tela — o cone
+     * atravessaria um morro que, desenhado, está mais alto. Aqui o raio e o
+     * relevo são comparados já esticados, os dois pelo mesmo fator: o encontro
+     * que se vê é o encontro que existe, porque esticar a vertical leva reta
+     * em reta e mantém quem está acima de quem.
+     *
+     * <h3>Onde não há dado</h3>
+     * Amostra sem altitude não interrompe o raio. Parar ali seria inventar uma
+     * parede onde ninguém mediu nada — o mesmo motivo pelo qual o terreno fica
+     * vazado em vez de virar planalto.
+     *
+     * @return distância percorrida, em metros de chão, limitada a {@code maxM}
+     */
+    private static double ateOTerreno(Point3D apice, double dx, double dy, double dz,
+                                      double maxM, double exagero,
+                                      double[] alt, int lado,
+                                      double larguraM, double profundM, double baseH) {
+        if (alt == null || lado <= 1) return maxM;
+        double passo = Math.max(1, larguraM / (lado - 1.0));
+        for (double t = passo; t <= maxM; t += passo) {
+            double x = apice.getX() + dx * t;
+            double z = apice.getZ() + dz * t;
+            double yRaio = apice.getY() + dy * t * exagero;
+
+            // Fora da caixa desenhada o raio para.
+            //
+            // Nao e' uma barreira fisica: e' que ali nao ha terreno na tela
+            // para comparar, e um feixe de 16 km continuando numa cena de 1,3
+            // km so faz cobrir tudo de cor. O alcance de verdade continua
+            // escrito na dica da caixa; o desenho mostra o pedaco que cabe.
+            if (foraDaCaixa(x, z, larguraM, profundM)) {
+                return Math.max(passo, t - passo);
+            }
+
+            double yChao = terrenoEm(x, z, alt, lado, larguraM, profundM, baseH, exagero);
+            if (Double.isNaN(yChao)) continue;
+            // Y cresce para BAIXO: o raio entrou no chao quando passa dele.
+            if (yRaio > yChao) return Math.max(passo, t - passo / 2);
+        }
+        return maxM;
+    }
+
+    /** O ponto saiu do quadrado de terreno que esta desenhado? */
+    private static boolean foraDaCaixa(double x, double z,
+                                       double larguraM, double profundM) {
+        return Math.abs(x) > larguraM / 2 || Math.abs(z) > profundM / 2;
+    }
+
+    /** Altura do relevo desenhado naquele ponto da cena, ou NaN sem dado. */
+    private static double terrenoEm(double x, double z, double[] alt, int lado,
+                                    double larguraM, double profundM, double baseH,
+                                    double exagero) {
+        double fx = x / larguraM + 0.5;
+        double fz = 0.5 - z / profundM;
+        if (fx < 0 || fx > 1 || fz < 0 || fz > 1) return Double.NaN;
+        int c = (int) Math.round(fx * (lado - 1));
+        int r = (int) Math.round(fz * (lado - 1));
+        if (c < 0 || r < 0 || c >= lado || r >= lado) return Double.NaN;
+        double h = alt[r * lado + c];
+        return Double.isNaN(h) ? Double.NaN : -(h - baseH) * exagero;
     }
 
     private static int tri(int[] faces, int f, int a, int b, int c) {
@@ -1910,7 +2240,9 @@ public final class Terrain3DView {
 
     private static List<Node> torres(double[] alt, int lado, double minX, double minY,
                                      double maxX, double maxY,
-                                     boolean comFeixe, double alcanceA, double alcanceB,
+                                     boolean comFeixeA, boolean comFeixeB,
+                                     double alcanceA, double alcanceB,
+                                     Color corFeixeA, Color corFeixeB, double opacFeixe,
                                      double larguraM, double profundM, double baseH,
                                      double exagero, double escala,
                                      NetworkPoint a, Radio radioA,
@@ -1923,10 +2255,14 @@ public final class Terrain3DView {
                 : torre(out, alt, lado, minX, minY, maxX, maxY, larguraM, profundM,
                         baseH, exagero, escala, b, radioB, Color.web("#ffa726"));
 
-        if (comFeixe) {
-            Node fa = feixe3D(topoA, radioA, alcanceA, exagero, Color.web("#29b6f6"));
+        if (comFeixeA) {
+            Node fa = feixe3D(topoA, radioA, alcanceA, exagero, corFeixeA, opacFeixe,
+                              alt, lado, larguraM, profundM, baseH);
             if (fa != null) out.add(fa);
-            Node fb = feixe3D(topoB, radioB, alcanceB, exagero, Color.web("#ffa726"));
+        }
+        if (comFeixeB) {
+            Node fb = feixe3D(topoB, radioB, alcanceB, exagero, corFeixeB, opacFeixe,
+                              alt, lado, larguraM, profundM, baseH);
             if (fb != null) out.add(fb);
         }
 
@@ -1971,7 +2307,10 @@ public final class Terrain3DView {
         // fosse de 30. Quem olha o desenho tem que poder confiar nele. Quando
         // a antena e' baixa demais para render um risco visivel, quem marca a
         // posicao e' a esfera no topo, que tem tamanho de simbolo.
-        Cylinder mastro = new Cylinder(escala * MASTRO, Math.max(h, 0.001));
+        // Haste com a espessura de uma haste. A ALTURA continua acompanhando
+        // o exagero vertical da cena: ela precisa ligar o solo desenhado ao
+        // topo desenhado, senao a antena flutuaria solta.
+        Cylinder mastro = new Cylinder(HASTE_M / 2, Math.max(h, 0.001));
         PhongMaterial matMastro = new PhongMaterial(cor);
         // Auto-iluminado: o mastro e' marcador, e nao deve sumir na sombra do
         // morro justamente quando se olha o morro.
@@ -1982,23 +2321,16 @@ public final class Terrain3DView {
         mastro.setTranslateY(ySolo - h / 2);
         out.add(mastro);
 
-        // A bola marca a ponta da antena, e nao pode engolir a antena.
-        //
-        // Com tamanho fixo de simbolo ela saia com 15,6 m de diametro sobre um
-        // mastro de 4 m desenhado com 12 unidades: 1,3 vez a torre inteira.
-        // Aproximar nao ajudava, porque os dois cresciam juntos e o que se via
-        // continuava sendo so a bola. Aqui ela encolhe junto com o mastro
-        // curto, com um piso para nao sumir quando a antena e' rente ao chao.
-        double raioBola = Math.min(escala * ESFERA,
-                Math.max(h * 0.35, escala * ESFERA * 0.2));
-        Sphere topo = new Sphere(raioBola);
+        // O radio: uma caixa de 40 cm, que e' o que um radio de enlace e'.
+        // A altura acompanha o exagero, como tudo que e' vertical na cena.
+        Box antena = new Box(RADIO_M, RADIO_M * exagero, RADIO_M);
         PhongMaterial matTopo = new PhongMaterial(cor.brighter());
         matTopo.setSelfIlluminationMap(corSolida(cor.deriveColor(0, 1, 0.8, 1)));
-        topo.setMaterial(matTopo);
-        topo.setTranslateX(x);
-        topo.setTranslateZ(z);
-        topo.setTranslateY(ySolo - h);
-        out.add(topo);
+        antena.setMaterial(matTopo);
+        antena.setTranslateX(x);
+        antena.setTranslateZ(z);
+        antena.setTranslateY(ySolo - h);
+        out.add(antena);
 
         return new Point3D(x, ySolo - h, z);
     }

@@ -103,6 +103,19 @@ public final class LinkPeer {
     }
 
     /**
+     * O rádio do outro lado em pessoa, ou null.
+     *
+     * {@link #of} devolve os números do par — ganho, cabo, altura — que é
+     * o bastante para a varredura de alcance. Quem precisa apontar uma antena
+     * PARA ele precisa de mais: onde ele está, a que cota, com que
+     * potência. Em vez de duplicar a busca lá fora (e arriscar escolher
+     * outro par que o desta tela), o mesmo critério atende os dois.
+     */
+    public static Radio radioDe(Radio r, Project project) {
+        return project == null ? null : buscar(r, project);
+    }
+
+    /**
      * O rádio do outro lado, se o projeto souber.
      *
      * Ordem: o AP informado à mão vale mais que qualquer inferência, porque

@@ -109,6 +109,36 @@ public final class Spinners {
     }
 
     /**
+     * Valor do que está ESCRITO no campo agora, sem tocar no campo.
+     *
+     * <h3>Por que isto precisa existir</h3>
+     * {@link #value} devolve o valor da fábrica, que só muda quando alguém
+     * comita — durante a digitação ele está atrasado. {@link #commit} resolve
+     * isso lendo o texto, mas reescreve o editor normalizado, e reescrever o
+     * editor manda o cursor para o começo.
+     *
+     * Numa tela que recalcula sozinha alguns décimos depois da última tecla,
+     * isso destrói a digitação: quem escreve "12,5" faz uma pausa natural
+     * depois de "12,", o recálculo comita, o campo vira "12" com o cursor no
+     * zero, e o "5" seguinte entra na FRENTE — "512". Medido nesta tela, o
+     * campo de altura recebia 1, 2, ponto e 5 e terminava mostrando "50.2".
+     *
+     * Então a leitura ao vivo é esta: interpreta o texto, respeita a faixa, e
+     * não escreve nada. Normalizar o texto é papel de {@link #commit}, que
+     * roda quando a edição termina.
+     */
+    public static double lido(Spinner<Double> sp, double fallback) {
+        var factory = sp.getValueFactory();
+        if (factory == null) return fallback;
+        Double v = factory.getConverter().fromString(sp.getEditor().getText());
+        if (v == null || v.isNaN()) return fallback;
+        if (factory instanceof SpinnerValueFactory.DoubleSpinnerValueFactory d) {
+            return Math.max(d.getMin(), Math.min(d.getMax(), v));
+        }
+        return v;
+    }
+
+    /**
      * Aplica o texto digitado e devolve o valor. Spinner editável não comita
      * sozinho: sem isto, digitar 5,5 e clicar direto em OK gravaria o valor
      * anterior.
@@ -126,6 +156,13 @@ public final class Spinners {
         Double parsed = factory.getConverter().fromString(text);
         if (parsed != null) factory.setValue(parsed);
         // Reescreve normalizado, para o campo não ficar mostrando "5," ou "05".
-        sp.getEditor().setText(factory.getConverter().toString(factory.getValue()));
+        // Só quando muda mesmo: setText reposiciona o cursor, e fazer isso com
+        // um texto idêntico ao que já está lá é atrapalhar de graça.
+        String normalizado = factory.getConverter().toString(factory.getValue());
+        if (!normalizado.equals(text)) {
+            int cursor = sp.getEditor().getCaretPosition();
+            sp.getEditor().setText(normalizado);
+            sp.getEditor().positionCaret(Math.min(cursor, normalizado.length()));
+        }
     }
 }

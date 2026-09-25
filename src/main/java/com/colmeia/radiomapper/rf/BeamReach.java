@@ -93,6 +93,42 @@ public final class BeamReach {
         return orc > 0 ? new Alcance(orc, Origem.ORCAMENTO) : new Alcance(0, Origem.NENHUM);
     }
 
+    /**
+     * Até onde o SINAL vai — para desenhar o feixe, e não o setor do cadastro.
+     *
+     * <h3>Por que a ordem aqui é outra</h3>
+     * {@link #de} dá prioridade ao cadastro, e com razão: no mapa ele é a
+     * intenção declarada de quem montou o projeto, e trocá-la por uma conta
+     * mudaria o desenho de projetos existentes sem ninguém pedir.
+     *
+     * O feixe em 3D é outra pergunta. Ali se está olhando o sinal atravessar o
+     * relevo, e o número do cadastro não tem nada a ver com isso: neste
+     * projeto um AP cadastrado com 40 m alcança 2496 m quando a conta é feita.
+     * Um cone de 40 m saindo de uma antena que cobre 2,5 km não é um desenho
+     * conservador — é um desenho errado.
+     *
+     * Então aqui vale o melhor número DE SINAL disponível: a varredura, que
+     * olhou o terreno; senão o orçamento de enlace, que é um teto e vai ser
+     * cortado pelo relevo na hora de desenhar. O cadastro só entra quando não
+     * há dado de RF para calcular coisa alguma.
+     */
+    public static Alcance paraSinal(Radio r, Double simuladoM) {
+        if (r == null || r.getBeamWidthDeg() <= 0) {
+            return new Alcance(0, Origem.NENHUM);
+        }
+        if (simuladoM != null && simuladoM > 0) {
+            return new Alcance(simuladoM, Origem.SIMULADO);
+        }
+        if (r.hasRfData()) {
+            double orc = BeamCoverage.reachEstimateM(r, BeamCoverage.Params.padrao(r));
+            if (orc > 0) return new Alcance(orc, Origem.ORCAMENTO);
+        }
+        if (r.getBeamRangeM() > 0) {
+            return new Alcance(r.getBeamRangeM(), Origem.CADASTRO);
+        }
+        return new Alcance(0, Origem.NENHUM);
+    }
+
     /** Há como desenhar algum feixe para este rádio? */
     public static boolean temAlgum(Radio r, Double simuladoM) {
         return de(r, simuladoM).vale();
