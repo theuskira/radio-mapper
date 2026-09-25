@@ -1,6 +1,7 @@
 package com.colmeia.radiomapper.ui;
 
 import com.colmeia.radiomapper.geo.ElevationChain;
+import com.colmeia.radiomapper.geo.ElevationSource;
 import com.colmeia.radiomapper.geo.Mercator;
 import com.colmeia.radiomapper.geo.TerrainTiles;
 import com.colmeia.radiomapper.geo.TileCache;
@@ -130,25 +131,72 @@ public final class Terrain3DView {
      * caixa custa mais do que o detalhe entrega.
      */
     public enum Qualidade {
-        RASCUNHO("Rascunho", 160, 1024),
-        MEDIA("M\u00e9dia", 240, 1536),
-        ALTA("Alta", 320, 2048),
-        MAXIMA("M\u00e1xima", 460, 3072);
+        RASCUNHO("Rascunho", 220, 1024),
+        MEDIA("M\u00e9dia", 400, 1536),
+        ALTA("Alta", 700, 2048),
+        MAXIMA("M\u00e1xima", 1100, 3072);
 
         private final String rotulo;
-        private final int malha, fotoPx;
+        private final int malhaMax, fotoPx;
 
-        Qualidade(String rotulo, int malha, int fotoPx) {
-            this.rotulo = rotulo; this.malha = malha; this.fotoPx = fotoPx;
+        Qualidade(String rotulo, int malhaMax, int fotoPx) {
+            this.rotulo = rotulo; this.malhaMax = malhaMax; this.fotoPx = fotoPx;
         }
 
-        /** Vértices por lado da malha do relevo. */
-        public int malha() { return malha; }
+        /**
+         * TETO de vértices por lado — não a contagem que vai ser usada.
+         *
+         * Quem decide a malha é o tamanho da caixa junto com a resolução
+         * da fonte de relevo (ver {@link Terrain3DView#ladoDaMalha}). Este
+         * número só entra como limite, quando a caixa é grande demais para
+         * caber um vértice por célula de relevo sem pesar na máquina.
+         */
+        public int malhaMax() { return malhaMax; }
 
         /** Lado da textura montada, em pixels. */
         public int fotoPx() { return fotoPx; }
 
         @Override public String toString() { return rotulo; }
+    }
+
+    /** Piso de vertices por lado, para caixa minuscula nao virar poliedro. */
+    private static final int MALHA_MIN = 48;
+
+    /**
+     * Quantos vertices por lado a malha do relevo precisa ter.
+     *
+     * <h3>Por que nao e um numero fixo</h3>
+     * Uma contagem fixa erra nos dois sentidos. Numa caixa de quilometros ela
+     * fica grossa demais: com 320 vertices num quadrado de 1,3 km cada vertice
+     * responde por 4 m de terreno, e qualquer cava mais estreita que isso
+     * simplesmente nao tem onde aparecer — some e o lugar fica plano. Numa
+     * caixa de dezenas de metros ela fica fina demais: varios vertices caem na
+     * MESMA celula de relevo, e como a consulta e por celula o resultado sao
+     * degraus onde o terreno e liso.
+     *
+     * <h3>A regra</h3>
+     * Um vertice por celula da fonte de relevo, que e todo o detalhe que
+     * existe para mostrar, limitado pelo teto da qualidade escolhida. Assim a
+     * malha acompanha o zoom: aproximar rende detalhe de verdade em vez de
+     * ampliar a mesma malha, e afastar para de prometer um detalhe que a
+     * maquina nao aguenta desenhar.
+     *
+     * De quebra, isto afia o 3D sem mudar nada no calculo de RF: com a malha
+     * no passo da fonte, o raio que {@link ElevationSource#elevationOver} usa
+     * para representar o quadrado do vertice cai abaixo de uma celula, e a
+     * leitura volta a ser pontual sozinha.
+     *
+     * @param ladoM lado da caixa, em metros de chao
+     */
+    static int ladoDaMalha(Qualidade q, double ladoM, ElevationSource elevation) {
+        double passo = elevation == null ? 0 : elevation.resolutionMeters();
+        // Fonte que nao sabe dizer a resolucao: o relevo global, de ~30 m.
+        if (passo <= 0) passo = 30;
+        // Abaixo de meio metro nao ha levantamento que sustente, e a malha
+        // explodiria por causa de uma casa decimal.
+        passo = Math.max(0.5, passo);
+        long desejado = (long) Math.ceil(ladoM / passo) + 1;
+        return (int) Math.max(MALHA_MIN, Math.min(q.malhaMax(), desejado));
     }
 
     /** Margem em volta da área de interesse, como fração do lado. */
@@ -321,7 +369,9 @@ public final class Terrain3DView {
         raiz.setTop(null);
         raiz.setBottom(null);
         carregando.setText("Levantando o terreno...");
-        final int LADO = qual[0].malha();
+        final double ESCALA = Mercator.groundScaleAt(
+                Mercator.latOfWorldY((fMinY + fMaxY) / 2));
+        final int LADO = ladoDaMalha(qual[0], (fMaxX - fMinX) * ESCALA, elevation);
         final int FOTO = qual[0].fotoPx();
         Task<double[]> amostrar = new Task<>() {
             @Override protected double[] call() {
@@ -336,9 +386,7 @@ public final class Terrain3DView {
                 // o ruido da fonte em vez do relevo: numa nuvem de drone a
                 // densidade varia com a linha de voo, e amostrar pontualmente
                 // transforma essa variacao em serrilhado.
-                double escalaM = Mercator.groundScaleAt(Mercator.latOfWorldY(
-                        (fMinY + fMaxY) / 2));
-                double meioPassoM = (fMaxX - fMinX) * escalaM / (LADO - 1.0) / 2;
+                double meioPassoM = (fMaxX - fMinX) * ESCALA / (LADO - 1.0) / 2;
                 for (int r = 0; r < LADO; r++) {
                     double wy = fMinY + (fMaxY - fMinY) * r / (LADO - 1.0);
                     for (int c = 0; c < LADO; c++) {
@@ -420,6 +468,13 @@ public final class Terrain3DView {
         // recalculada o objeto e' outro, e guardar a referencia perderia o que
         // o usuario tinha ligado bem na hora em que ele quer comparar.
         final java.util.Set<String> ligadas = new java.util.LinkedHashSet<>();
+
+        // Nomes que ja apareceram alguma vez. Serve para distinguir "cobertura
+        // nova, ligar por padrao" de "o usuario desligou esta". Sem isso o
+        // conjunto acima nascia vazio e NENHUMA cobertura era pintada ate
+        // alguem marcar a caixa na mao -- a cena abria com o alcance simulado
+        // invisivel, embora ele estivesse ali.
+        final java.util.Set<String> vistos = new java.util.HashSet<>();
         final List<Cobertura>[] coberturasAgora = new List[] { coberturas };
         final double[] alcances = { alcanceA, alcanceB };
         final String[] origens = { origemA, origemB };
@@ -724,6 +779,12 @@ public final class Terrain3DView {
             caixas.getChildren().clear();
             List<Cobertura> agora = coberturasAgora[0];
             if (agora != null && !agora.isEmpty()) {
+                // Cobertura que chega pela primeira vez entra ligada: quem
+                // abriu o 3D depois de simular quer VER o alcance, nao
+                // procurar a caixa que o acende.
+                for (Cobertura cb : agora) {
+                    if (vistos.add(cb.nome())) ligadas.add(cb.nome());
+                }
                 Label rot = new Label("Alcance:");
                 rot.setStyle("-fx-text-fill: #ddd;");
                 rot.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
@@ -899,6 +960,11 @@ public final class Terrain3DView {
                 java.util.Set<String> vivos = new java.util.HashSet<>();
                 if (novas != null) for (Cobertura c : novas) vivos.add(c.nome());
                 ligadas.retainAll(vivos);
+                // O mesmo esquecimento vale para os vistos: se a cobertura
+                // sumiu e depois voltar, ela conta como nova e volta ligada.
+                // Sem isto, um update passageiro sem cobertura nenhuma
+                // apagava a selecao para sempre.
+                vistos.retainAll(vivos);
 
                 montarCaixasDeAlcance.run();
                 atualizarFeixes.run();

@@ -748,10 +748,24 @@ public class MainController {
                     + "metro de ch\u00e3o para medir.");
             return;
         }
+        // O retrato NAO e tirado aqui. A janela, ao abrir, simula o radio
+        // COMO ELE ESTA SALVO e desenha esse lobo -- e isso nao e alteracao
+        // de ninguem, e o estado atual. Tirar o retrato antes disso fazia
+        // "voltar ao que estava" significar "sem lobo nenhum", e fechar
+        // limpava o mapa. O retrato e tirado na primeira simulacao, logo
+        // abaixo, que e justamente a do radio salvo.
+        idDoRetrato = r.getId();
+        retratoAntesDaHipotese = null;
+
         BeamSimDialog.show(mainWindow(), r, p, project, elevation, project.isMapMode(),
                 simCache,
                 (radioId, cobertura, comRelevo) -> {
                     mapPane.setSimulatedBeam(radioId, cobertura, comRelevo);
+                    // A primeira simulacao e a do radio salvo: e ELA o estado
+                    // para o qual um descarte tem de voltar.
+                    if (idDoRetrato != null && retratoAntesDaHipotese == null) {
+                        retratoAntesDaHipotese = retratar(idDoRetrato);
+                    }
                     // O 3D mostra este mesmo alcance: se esta aberto, recebe o
                     // resultado na hora, sem perder o angulo nem o que esta
                     // marcado. Antes era preciso fechar e reabrir a cena.
@@ -769,6 +783,9 @@ public class MainController {
                             : "Alcance em cor \u00fanica.");
                 },
                 aplicado -> {
+                    // Salvou: o que esta na tela passa a ser o estado bom, e e
+                    // ele que um fechamento posterior deve preservar.
+                    if (idDoRetrato != null) retratoAntesDaHipotese = retratar(idDoRetrato);
                     atualizar3D();
                     // Tudo que e' desenhado a partir do radio: o feixe no mapa,
                     // a pre-visualizacao de enlace e as listas. Sem isto, quem
@@ -778,10 +795,89 @@ public class MainController {
                     showProfile(aplicado);
                     radiosList.refresh();
                     refreshAllRadios();
-                    setStatus("Par\u00e2metros aplicados a "
+                    setStatus("Par\u00e2metros salvos em "
                             + nomeDoRadio(aplicado) + ".");
-                });
+                },
+                this::hipoteseMudou);
     }
+
+    /**
+     * O radio em edicao na janela de alcance, antes de ser salvo.
+     *
+     * Enquanto ela esta aberta, tudo que desenha a partir deste radio desenha
+     * a HIPOTESE: o cone no 3D, a pre-visualizacao de enlace e o lobo no mapa.
+     * Sem isto o mapa seguia o ajuste e as outras duas telas continuavam no
+     * radio gravado, e as tres discordavam entre si.
+     */
+    private Radio hipotese;
+
+    /**
+     * O que o mapa e o cache mostravam para aquele radio antes da hipotese.
+     *
+     * Fechar a janela e' descartar: nada entra no projeto sem o botao Salvar.
+     * Para o descarte valer tambem no desenho, e preciso ter guardado o que
+     * havia antes -- a varredura da hipotese sobrescreve o cache, que e de uma
+     * posicao so por radio.
+     */
+    private record RetratoSim(com.colmeia.radiomapper.rf.BeamCoverage.Cobertura cobertura,
+                              boolean comRelevo, String assinatura,
+                              com.colmeia.radiomapper.rf.BeamCoverage.Result resultado,
+                              com.colmeia.radiomapper.rf.BeamCoverage.Params parametros) {}
+
+    private RetratoSim retratoAntesDaHipotese;
+
+    /** Este radio, ou a hipotese aberta sobre ele. */
+    private Radio comHipotese(Radio r) {
+        return (hipotese != null && r != null && hipotese.getId().equals(r.getId()))
+                ? hipotese : r;
+    }
+
+    /** Guarda o que esta desenhado para este radio, para poder desfazer. */
+    private RetratoSim retratar(String id) {
+        return new RetratoSim(mapPane.simulatedCoverage(id), mapPane.simulatedWithTerrain(id),
+                simAssinatura.get(id), simResultado.get(id), simParametros.get(id));
+    }
+
+    /** Devolve o desenho e o cache ao estado do retrato. */
+    private void restaurar(String id, RetratoSim ret) {
+        if (ret == null) return;
+        mapPane.setSimulatedBeam(id, ret.cobertura(), ret.comRelevo());
+        if (ret.assinatura() == null) simAssinatura.remove(id); else simAssinatura.put(id, ret.assinatura());
+        if (ret.resultado() == null) simResultado.remove(id); else simResultado.put(id, ret.resultado());
+        if (ret.parametros() == null) simParametros.remove(id); else simParametros.put(id, ret.parametros());
+    }
+
+    /**
+     * A janela de alcance avisou que a hipotese mudou, ou acabou.
+     *
+     * @param h a copia em edicao, ou null quando ela foi salva (virou o
+     *          radio) ou descartada (a janela fechou)
+     */
+    private void hipoteseMudou(Radio h) {
+        hipotese = h;
+        if (h == null && idDoRetrato != null) {
+            // Salvar tira um retrato novo, entao restaurar depois de salvar
+            // repoe exatamente o que ja esta na tela. O restauro so muda
+            // alguma coisa quando a janela fechou sem salvar -- que e
+            // justamente quando tem de mudar.
+            restaurar(idDoRetrato, retratoAntesDaHipotese);
+            idDoRetrato = null;
+            retratoAntesDaHipotese = null;
+        }
+        // So REFRESCA o que ja estava a vista. showProfile(null) cai em
+        // hideProfile(), e como selectedRadio() pode nao ter ninguem
+        // selecionado, um ajuste no alcance chegava a ESCONDER a
+        // pre-visualizacao de enlace. Atualizar uma tela nunca pode faze-la
+        // sumir.
+        Radio alvo = selectedRadio();
+        if (alvo == null && h != null) alvo = project.findRadioById(h.getId()).orElse(null);
+        if (alvo != null && profilePane.isVisible()) showProfile(alvo);
+        atualizar3D();
+        mapPane.redraw();
+    }
+
+    /** De quem e o retrato guardado. */
+    private String idDoRetrato;
 
     /**
      * Ultimo lobo calculado por radio.
@@ -1063,8 +1159,8 @@ public class MainController {
         @Override public void loadPly(Runnable onDone) {
             double lat = project.isMapMode() ? mapPane.centerLat() : project.getViewLat();
             double lon = project.isMapMode() ? mapPane.centerLon() : project.getViewLon();
-            PlyLoadDialog.show(mainWindow(), lat, lon, pe -> {
-                adoptPly(pe);
+            PlyLoadDialog.show(mainWindow(), lat, lon, (pe, af) -> {
+                adoptPly(pe, af);
                 setStatus("Levantamento carregado: " + pe.file().getName()
                         + " (" + pe.pointsUsed() + " pontos).");
                 onDone.run();
@@ -1072,6 +1168,7 @@ public class MainController {
         }
         @Override public void clearPly() {
             plyElevation = null;
+            plyAfericao = null;
             elevation.setPly(null);
             mapPane.setSurveyFootprint(null, null);
             project.setPlyPath("");
@@ -1082,9 +1179,15 @@ public class MainController {
         @Override public com.colmeia.radiomapper.geo.PlyElevation currentPly() {
             return plyElevation;
         }
+        @Override public com.colmeia.radiomapper.geo.PlyCheck.Resultado currentPlyCheck() {
+            return plyAfericao;
+        }
     };
 
     private PlyElevation plyElevation;
+
+    /** O que a afericao contra o relevo de referencia achou, ou null. */
+    private com.colmeia.radiomapper.geo.PlyCheck.Resultado plyAfericao;
 
     /**
      * Passa a usar este levantamento e anota no projeto como ele foi lido.
@@ -1093,9 +1196,13 @@ public class MainController {
      * teria que adivinhar, e adivinhar diferente colocaria o relevo em outro
      * lugar. Ver {@link #loadProjectPlyAsync}.
      */
-    private void adoptPly(PlyElevation pe) {
+    private void adoptPly(PlyElevation pe, com.colmeia.radiomapper.geo.PlyCheck.Resultado af) {
         plyElevation = pe;
+        plyAfericao = af;
         elevation.setPly(pe);
+        // Acerta a reserva na altura do levantamento: sem isto, cada vao da
+        // nuvem vira um poco de dezenas de metros na emenda entre as duas.
+        elevation.costurar(pe.worldBounds());
         project.setPlyPath(pe.file().getAbsolutePath());
         project.setPlyCrs(pe.crs());
         project.setPlyUtmZone(pe.utmZone());
@@ -1180,15 +1287,37 @@ public class MainController {
         final int fZona = zona;
         final boolean fSul = sul;
         setStatus("Carregando levantamento " + f.getName() + "...");
-        Task<PlyElevation> t = new Task<>() {
-            @Override protected PlyElevation call() throws Exception {
-                return PlyElevation.load(f, fCrs, fZona, fSul, cell, 1);
+        Task<Object[]> t = new Task<>() {
+            @Override protected Object[] call() throws Exception {
+                PlyElevation pe = PlyElevation.load(f, fCrs, fZona, fSul, cell, 1);
+                // Reabrir projeto nao passa pelo dialogo, entao a afericao
+                // teria ficado de fora justamente no caminho mais usado. Ela
+                // roda aqui tambem — so que sem modal: quem abre um projeto
+                // nao quer ser interrogado, quer ver o mapa. O veredito vai
+                // para a barra de status e para as configuracoes.
+                com.colmeia.radiomapper.geo.PlyCheck.Resultado af = null;
+                if (com.colmeia.radiomapper.geo.TerrainTiles.INSTANCE.isEnabled()) {
+                    double[] b = pe.worldBounds();
+                    com.colmeia.radiomapper.geo.TerrainTiles.INSTANCE
+                            .prefetch(b[0], b[1], b[2], b[3], 30000);
+                    af = com.colmeia.radiomapper.geo.PlyCheck.aferir(
+                            pe, com.colmeia.radiomapper.geo.TerrainTiles.INSTANCE, 40);
+                }
+                return new Object[] { pe, af };
             }
         };
         t.setOnSucceeded(e -> {
-            adoptPly(t.getValue());
-            setStatus("Levantamento carregado: " + f.getName()
-                    + " (" + t.getValue().pointsUsed() + " pontos).");
+            PlyElevation pe = (PlyElevation) t.getValue()[0];
+            var af = (com.colmeia.radiomapper.geo.PlyCheck.Resultado) t.getValue()[1];
+            adoptPly(pe, af);
+            if (af != null && !af.aprovado()) {
+                setStatus("Levantamento " + f.getName() + " carregado, mas " + af.veredito()
+                        + " (discordancia de " + String.format("%.0f", af.rms())
+                        + " m). Veja os numeros nas configuracoes.");
+            } else {
+                setStatus("Levantamento carregado: " + f.getName()
+                        + " (" + pe.pointsUsed() + " pontos).");
+            }
             mapPane.redraw();
         });
         t.setOnFailed(e -> {
@@ -1633,6 +1762,8 @@ public class MainController {
 
     private void showProfile(Radio r) {
         if (r == null) { hideProfile(); return; }
+        // Com a janela de alcance aberta, o que se desenha e a hipotese.
+        r = comHipotese(r);
 
         NetworkPoint p = project.findPointOfRadio(r.getId()).orElse(null);
         if (p == null) { hideProfile(); return; }
@@ -1640,7 +1771,7 @@ public class MainController {
         // Enlace tem prioridade sobre feixe solto: se este radio esta ligado a
         // outro, o que interessa e o caminho entre os dois, nao o cone solto.
         Link enlace = linkOf(r);
-        Radio outro = enlace == null ? null : partnerOf(enlace, r);
+        Radio outro = comHipotese(enlace == null ? null : partnerOf(enlace, r));
         if (outro != null) {
             NetworkPoint po = project.findPointOfRadio(outro.getId()).orElse(null);
             if (po != null) {
@@ -1712,12 +1843,12 @@ public class MainController {
     private void atualizar3D() {
         if (janela3D == null || !janela3D.aberta()) return;
 
-        Radio r = selectedRadio();
+        Radio r = comHipotese(selectedRadio());
         if (r == null) return;
         NetworkPoint np = project.findPointOfRadio(r.getId()).orElse(null);
         if (np == null) return;
         Link enlace = linkOf(r);
-        Radio outro = enlace == null ? null : partnerOf(enlace, r);
+        Radio outro = comHipotese(enlace == null ? null : partnerOf(enlace, r));
 
         java.util.List<Terrain3DView.Cobertura> cobs = new java.util.ArrayList<>();
         for (Radio alvo : new Radio[] { r, outro }) {

@@ -61,6 +61,9 @@ public final class SettingsDialog {
         void loadPly(Runnable onDone);
         void clearPly();
         com.colmeia.radiomapper.geo.PlyElevation currentPly();
+
+        /** O que a afericao contra o relevo de referencia achou, ou null. */
+        com.colmeia.radiomapper.geo.PlyCheck.Resultado currentPlyCheck();
     }
 
     /**
@@ -384,6 +387,11 @@ public final class SettingsDialog {
         Label plyStatus = new Label();
         plyStatus.setWrapText(true);
         plyStatus.setMaxWidth(430);
+
+        Label plyAfericao = new Label();
+        plyAfericao.setWrapText(true);
+        plyAfericao.setMaxWidth(430);
+        plyAfericao.setStyle("-fx-text-fill: #b26500; -fx-font-size: 11;");
         Runnable refreshPly = () -> {
             var ply = hooks == null ? null : hooks.currentPly();
             plyStatus.setText(ply == null
@@ -393,6 +401,23 @@ public final class SettingsDialog {
                             ply.resolutionMeters(), ply.minZ(), ply.maxZ()));
             plyStatus.setStyle(ply == null ? "-fx-text-fill: #888; -fx-font-size: 11;"
                                            : "-fx-text-fill: #2e7d32; -fx-font-size: 11;");
+
+            // O veredito da afericao fica aqui porque este e o lugar onde se
+            // decide se a nuvem continua na cadeia. Numero na tela, decisao
+            // do usuario: o dado nao e alterado em nenhum caso.
+            var af = hooks == null ? null : hooks.currentPlyCheck();
+            boolean mostrar = ply != null && af != null && !af.aprovado();
+            plyAfericao.setManaged(mostrar);
+            plyAfericao.setVisible(mostrar);
+            plyAfericao.setText(!mostrar ? "" : String.format(
+                    "Atencao: este levantamento %s. Desnivel desenhado %.0f m contra %.0f m "
+                    + "do relevo de referencia, semelhanca das formas %.2f, discordancia de "
+                    + "%.0f m (RMS) em %.0f%% da area. Altitude errada nessa ordem vira "
+                    + "obstaculo que nao existe no perfil do enlace. A nuvem nao foi "
+                    + "alterada — se ela nao for confiavel aqui, remova-a e o relevo "
+                    + "volta as fontes seguintes.",
+                    af.veredito(), af.amplitudePly(), af.amplitudeRef(), af.correlacao(),
+                    af.rms(), 100 * af.fracaoFora()));
         };
         refreshPly.run();
 
@@ -409,6 +434,7 @@ public final class SettingsDialog {
         gImg.add(new Label("Levantamento .PLY:"), 0, r);
         gImg.add(row(loadPly, clearPly), 1, r++);
         gImg.add(plyStatus, 0, r++, 2, 1);
+        gImg.add(plyAfericao, 0, r++, 2, 1);
         gImg.add(hint("Nuvem de pontos ou malha de drone. É a fonte de maior prioridade: "
                 + "resolução centimétrica e o terreno como está hoje, incluindo árvores e "
                 + "construções — que é o que de fato obstrui um enlace."), 0, r++, 2, 1);

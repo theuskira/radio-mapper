@@ -10,7 +10,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Leitor de PLY (Polygon File Format) — só os vértices, que é o que interessa
@@ -50,7 +52,36 @@ public final class PlyReader {
      * como comentário. Ver {@link PlyGeoref}.
      */
     public record Header(long vertexCount, String format, List<String> properties,
-                         List<String> comments) {}
+                         List<String> comments, Map<String, String> vertexTypes) {
+
+        /**
+         * Passo mínimo que o tipo declarado consegue representar na magnitude
+         * informada, nas unidades do próprio arquivo.
+         *
+         * Coordenada guardada em {@code float} tem 24 bits de mantissa: perto
+         * de zero isso é fino, mas num northing UTM de 8,7 milhões o degrau
+         * chega a 1 m. O arquivo não avisa — o número simplesmente chega
+         * arredondado, e uma grade mais fina que o degrau só produz listras
+         * vazias. Daí perguntarmos ao tipo, antes de prometer resolução.
+         *
+         * @param prop  nome da propriedade (x, y ou z)
+         * @param valor a maior magnitude que aquela coordenada assume
+         * @return o degrau em unidades do arquivo, ou 0 se o tipo não limita
+         *         (double, ou propriedade ausente)
+         */
+        public double stepOf(String prop, double valor) {
+            String t = vertexTypes == null ? null : vertexTypes.get(prop.toLowerCase());
+            if (t == null) return 0;
+            return switch (t) {
+                case "float", "float32" -> Math.ulp((float) valor);
+                case "double", "float64" -> 0;
+                // Inteiro guarda metro cheio (ou a unidade que o gerador usou).
+                case "int", "int32", "uint", "uint32" -> 1;
+                case "short", "int16", "ushort", "uint16" -> 1;
+                default -> 0;
+            };
+        }
+    }
 
     private enum Format { ASCII, BINARY_LE, BINARY_BE }
 
@@ -62,9 +93,13 @@ public final class PlyReader {
         try (InputStream in = new BufferedInputStream(Files.newInputStream(file.toPath()))) {
             Parsed p = parseHeader(in);
             List<String> names = new ArrayList<>();
-            for (Prop pr : p.vertexProps) names.add(pr.name() + " (" + pr.type() + ")");
+            Map<String, String> tipos = new HashMap<>();
+            for (Prop pr : p.vertexProps) {
+                names.add(pr.name() + " (" + pr.type() + ")");
+                tipos.put(pr.name().toLowerCase(), pr.type());
+            }
             return new Header(p.vertexCount, p.format.name().toLowerCase(), names,
-                    List.copyOf(p.comments));
+                    List.copyOf(p.comments), Map.copyOf(tipos));
         } catch (IOException ex) {
             throw new PlyException("Não consegui ler o arquivo: " + ex.getMessage(), ex);
         }

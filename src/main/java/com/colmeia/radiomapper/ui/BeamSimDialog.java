@@ -103,6 +103,24 @@ public final class BeamSimDialog {
         void accept(Radio radio);
     }
 
+    /**
+     * A hipotese mudou, ou foi descartada.
+     *
+     * A janela edita uma COPIA do radio, e ate agora so o lobo no mapa
+     * acompanhava essa copia: o cone no 3D e a pre-visualizacao de enlace
+     * continuavam desenhando o radio gravado, porque e dele que saem. Quem
+     * estava comparando duas alturas via o alcance mudar no mapa e o perfil
+     * parado -- duas telas discordando sobre o mesmo radio.
+     *
+     * Este aviso leva a hipotese para quem desenha, a cada ajuste. E manda
+     * {@code null} quando ela deixa de valer: ao salvar (a copia virou o
+     * radio, nao ha mais hipotese) e ao fechar sem salvar (foi descartada, e
+     * nenhuma tela pode continuar mostrando ela).
+     */
+    public interface OnHypothesis {
+        void accept(Radio hipotese);
+    }
+
     public static void show(Window owner, Radio radio, NetworkPoint p, Project project,
                             ElevationChain elevation, boolean mapMode,
                             Cache cache, OnSimulated onSimulated) {
@@ -121,6 +139,15 @@ public final class BeamSimDialog {
                             ElevationChain elevation, boolean mapMode,
                             Cache cache, OnSimulated onSimulated,
                             OnQualityToggle onQuality, OnApplied onApplied) {
+        show(owner, radio, p, project, elevation, mapMode, cache, onSimulated,
+             onQuality, onApplied, null);
+    }
+
+    public static void show(Window owner, Radio radio, NetworkPoint p, Project project,
+                            ElevationChain elevation, boolean mapMode,
+                            Cache cache, OnSimulated onSimulated,
+                            OnQualityToggle onQuality, OnApplied onApplied,
+                            OnHypothesis onHypothesis) {
 
         // Cópia: tudo que se mexe aqui é hipótese até alguém aplicar.
         Radio r = copiar(radio);
@@ -251,8 +278,33 @@ public final class BeamSimDialog {
         saida.setWrapText(true);
         saida.setStyle("-fx-font-family: 'Consolas','Menlo','Monospaced'; -fx-font-size: 11;");
 
-        Button aplicar = new Button("Aplicar ao rádio");
+        // A recomendacao tem area propria, e nao a mesma de `saida`.
+        // Dividiam uma so, e como qualquer ajuste num campo dispara uma nova
+        // simulacao que escreve nela, a recomendacao era apagada pelo
+        // relatorio de alcance. Pior: o botao "Usar" mexe nos campos, entao
+        // usar a recomendacao apagava a recomendacao. Aqui ela fica ate ser
+        // substituida por outra.
+        TextArea recomendacao = new TextArea();
+        recomendacao.setEditable(false);
+        recomendacao.setPrefRowCount(9);
+        recomendacao.setWrapText(true);
+        recomendacao.setStyle("-fx-font-family: 'Consolas','Menlo','Monospaced'; "
+                + "-fx-font-size: 11; -fx-control-inner-background: #f4f7f4;");
+        Label tituloRec = new Label("Recomendação:");
+        recomendacao.setManaged(false);
+        recomendacao.setVisible(false);
+        tituloRec.setManaged(false);
+        tituloRec.setVisible(false);
+        Runnable[] mostrarRec = { () -> {
+            boolean tem = !recomendacao.getText().isBlank();
+            recomendacao.setManaged(tem); recomendacao.setVisible(tem);
+            tituloRec.setManaged(tem); tituloRec.setVisible(tem);
+        } };
+
+        Button aplicar = new Button("Salvar no rádio");
         aplicar.setDisable(true);
+        aplicar.setDefaultButton(true);
+        aplicar.setStyle("-fx-font-weight: bold;");
         Button limpar = new Button("Tirar do mapa");
 
         Label aviso = new Label("Espaço livre e visada geométrica: sem difração, vegetação, "
@@ -309,6 +361,11 @@ public final class BeamSimDialog {
                     : "");
             avisoAbertura.setManaged(varreTudo);
             avisoAbertura.setVisible(varreTudo);
+
+            // Quem desenha a partir do radio recebe a hipotese agora, e nao
+            // so quando ela for salva: e isso que faz o cone no 3D e o perfil
+            // do enlace acompanharem o ajuste, junto com o lobo no mapa.
+            if (onHypothesis != null) onHypothesis.accept(r);
 
             BeamCoverage.Params prm = new BeamCoverage.Params(
                     Spinners.lido(minRssi, -70),
@@ -431,7 +488,8 @@ public final class BeamSimDialog {
                     StationAim.Plano pl = tp.getValue();
                     plano[0] = pl.vale() ? pl : null;
                     usar.setDisable(plano[0] == null || !pl.temMudanca());
-                    saida.setText(pl.vale() ? relatorioMira(pl) : pl.nota());
+                    recomendacao.setText(pl.vale() ? relatorioMira(pl) : pl.nota());
+                    mostrarRec[0].run();
                 });
                 tp.setOnFailed(ev -> {
                     recomendar.setDisable(false);
@@ -472,13 +530,15 @@ public final class BeamSimDialog {
                 ApAim.Plano pl = t.getValue();
                 planoAp[0] = pl.vale() ? pl : null;
                 usar.setDisable(planoAp[0] == null || !pl.temMudanca());
-                saida.setText(pl.vale() ? relatorioCenario(pl) : pl.nota());
+                recomendacao.setText(pl.vale() ? relatorioCenario(pl) : pl.nota());
+                mostrarRec[0].run();
             });
             t.setOnFailed(ev -> {
                 recomendar.setDisable(false);
                 Throwable ex = t.getException();
-                saida.setText("Falha ao recomendar: "
+                recomendacao.setText("Falha ao recomendar: "
                         + (ex == null ? "erro desconhecido" : ex.getMessage()));
+                mostrarRec[0].run();
             });
             Thread th = new Thread(t, "cenario-ap");
             th.setDaemon(true);
@@ -520,11 +580,14 @@ public final class BeamSimDialog {
             lerCampos.run();
             copiarPara(r, radio);
             aplicar.setDisable(true);
-            saida.setText("Parâmetros gravados no rádio.\n\n" + saida.getText());
+            saida.setText("Parâmetros salvos no rádio.\n\n" + saida.getText());
             Log.info("Parametros de %s alterados pela simulacao de alcance", nome(radio));
             // O rádio mudou de verdade: quem desenha a partir dele precisa
             // redesenhar agora, e não só quando esta janela fechar.
             if (onApplied != null) onApplied.accept(radio);
+            // A copia virou o radio: nao ha mais hipotese para as telas
+            // mostrarem por cima dele.
+            if (onHypothesis != null) onHypothesis.accept(null);
         });
 
         limpar.setOnAction(e -> {
@@ -537,10 +600,19 @@ public final class BeamSimDialog {
                 new Separator(),
                 new Label("Do outro lado:"), go, dePar,
                 new Separator(),
-                new HBox(8, aplicar, limpar, recomendar, usar), saida, aviso);
+                new HBox(8, aplicar, limpar, recomendar, usar),
+                tituloRec, recomendacao, saida, aviso);
         box.setPadding(new Insets(12));
         box.setPrefWidth(580);
         dlg.getDialogPane().setContent(box);
+
+        // Fechar e' descartar, de proposito: a janela e' um rascunho e nada
+        // dela entra no projeto sem o botao Salvar. Por isso o aviso de
+        // hipotese precisa ser desfeito na saida -- senao o 3D e o perfil
+        // continuariam desenhando uma hipotese que ninguem aceitou.
+        dlg.setOnHidden(ev -> {
+            if (onHypothesis != null) onHypothesis.accept(null);
+        });
 
         Platform.runLater(simular[0]);
         // show(), nao showAndWait(): esperar aqui seria bloquear o mapa de

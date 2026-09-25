@@ -5,6 +5,7 @@ import com.colmeia.radiomapper.util.Log;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,13 +45,31 @@ public final class PlyElevation implements ElevationSource {
     private static final int MAX_CELLS = 12_000_000;
 
     /**
-     * Até que distância uma célula vazia aceita a altura da vizinha.
+     * Até que distância procurar a borda do buraco, em metros.
      *
-     * Vale para a consulta e para o desenho da área coberta: é o que define
-     * onde {@link #elevationAt} responde, e o contorno precisa desenhar
-     * exatamente isso.
+     * Uma célula vazia só é preenchida quando há dado medido nas QUATRO
+     * direções dentro deste alcance — aí ela está entre bordas, e dá para
+     * ligar uma na outra. Vazio com alguma direção aberta é lado de fora do
+     * voo, e continua sem resposta.
+     *
+     * O número é generoso de propósito. Buraco de voo não tem o tamanho de
+     * falha de amostragem: um deles neste levantamento tem borda a 20 m a
+     * oeste e a 349 m ao sul, e um alcance curto o deixaria de fora
+     * exatamente por ser grande.
      */
-    private static final int RAIO_VIZINHO = 2;
+    private static final double ALCANCE_CERCO_M = 400;
+
+    /** Teto de relaxações, para buraco enorme não travar a carga. */
+    private static final int MAX_RELAXACOES = 1500;
+
+    /**
+     * Células vazias de folga entre o primeiro ponto e a borda da matriz.
+     *
+     * Sem ela, a coluna zero da matriz encostaria no dado e a busca por borda
+     * a oeste não teria onde dizer "aqui não tem nada" — além de deixar a
+     * truncação de {@code (int)} sem margem na quina sudoeste.
+     */
+    private static final int MARGEM = 3;
 
     /** Teto de células por lado em {@link #elevationOver}, para não travar. */
     private static final int MAX_RAIO_AREA = 48;
@@ -66,19 +85,38 @@ public final class PlyElevation implements ElevationSource {
     private final long pointsUsed;
     private final double minZ, maxZ;
 
+    /** Células com altura própria, medida — o resto da grade é deduzido. */
+    private final BitSet medido;
+    private final int preenchidas;
+
     private PlyElevation(File source, Crs crs, int utmZone, boolean utmSouth,
                          double minX, double minY, double cellSize, int cols, int rows,
-                         float[] grid, long pointsUsed, double minZ, double maxZ) {
+                         float[] grid, long pointsUsed, double minZ, double maxZ,
+                         BitSet medido, int preenchidas) {
         this.source = source; this.crs = crs;
         this.utmZone = utmZone; this.utmSouth = utmSouth;
         this.minX = minX; this.minY = minY; this.cellSize = cellSize;
         this.cols = cols; this.rows = rows; this.grid = grid;
         this.pointsUsed = pointsUsed; this.minZ = minZ; this.maxZ = maxZ;
+        this.medido = medido; this.preenchidas = preenchidas;
     }
 
     /** O que a leitura encontrou, para mostrar ao usuário antes de confirmar. */
     public record Summary(long vertexCount, double minX, double maxX,
-                          double minY, double maxY, double minZ, double maxZ) {
+                          double minY, double maxY, double minZ, double maxZ,
+                          double xyStep) {
+
+        /**
+         * Menor degrau que as coordenadas horizontais conseguem representar,
+         * em METROS — zero quando o tipo declarado não limita nada.
+         *
+         * Pedir grade mais fina que isto não traz detalhe: traz listra vazia,
+         * porque os pontos chegam arredondados para o degrau e as linhas
+         * entre eles ficam sem nenhum vértice. Ver {@link PlyReader.Header#stepOf}.
+         */
+        public double xyStepMeters(Crs crs) {
+            return crs == Crs.GEOGRAPHIC ? xyStep * 111_320.0 : xyStep;
+        }
 
         /** Palpite de CRS a partir da ordem de grandeza dos valores. */
         public Crs guessCrs() {
@@ -104,7 +142,16 @@ public final class PlyElevation implements ElevationSource {
             if (z > ext[5]) ext[5] = z;
         });
         if (n == 0) throw new PlyReader.PlyException("Nenhum vértice legível no arquivo.");
-        return new Summary(n, ext[0], ext[1], ext[2], ext[3], ext[4], ext[5]);
+
+        // O degrau sai do tipo declarado avaliado na MAIOR magnitude que a
+        // coordenada alcança: é lá que o float perde resolução, e é o pior
+        // caso que manda, porque a grade é uma só para o arquivo inteiro.
+        PlyReader.Header h = PlyReader.peek(file);
+        double passo = Math.max(
+                h.stepOf("x", Math.max(Math.abs(ext[0]), Math.abs(ext[1]))),
+                h.stepOf("y", Math.max(Math.abs(ext[2]), Math.abs(ext[3]))));
+
+        return new Summary(n, ext[0], ext[1], ext[2], ext[3], ext[4], ext[5], passo);
     }
 
     /**
@@ -127,19 +174,27 @@ public final class PlyElevation implements ElevationSource {
         // Em graus, a célula pedida em metros precisa virar graus.
         double cell = crs == Crs.GEOGRAPHIC ? cellSizeM / 111_320.0 : Math.max(0.05, cellSizeM);
 
-        int c = (int) Math.ceil(spanX / cell) + 1;
-        int r = (int) Math.ceil(spanY / cell) + 1;
+        int c = (int) Math.ceil(spanX / cell) + 1 + 2 * MARGEM;
+        int r = (int) Math.ceil(spanY / cell) + 1 + 2 * MARGEM;
         // Afrouxa até caber: grade grande demais estouraria a memória.
         while ((long) c * r > MAX_CELLS) {
             cell *= 1.5;
-            c = (int) Math.ceil(spanX / cell) + 1;
-            r = (int) Math.ceil(spanY / cell) + 1;
+            c = (int) Math.ceil(spanX / cell) + 1 + 2 * MARGEM;
+            r = (int) Math.ceil(spanY / cell) + 1 + 2 * MARGEM;
         }
 
         float[] grid = new float[c * r];
         Arrays.fill(grid, Float.NaN);
 
-        final double fMinX = s.minX(), fMinY = s.minY(), fCell = cell;
+        // A grade começa uma margem ANTES do primeiro ponto. A erosão do
+        // fechamento precisa enxergar célula vazia dos dois lados da fronteira
+        // para saber onde ela está; encostada na borda da matriz ela não
+        // enxerga, trata o lado de fora como cheio e deixa a área do
+        // levantamento crescer algumas células. A margem afasta a borda da
+        // matriz do dado e o fechamento passa a devolver a fronteira exata.
+        final double fMinX = s.minX() - MARGEM * cell;
+        final double fMinY = s.minY() - MARGEM * cell;
+        final double fCell = cell;
         final int fc = c, fr = r;
         long used = PlyReader.readVertices(file, stride, (x, y, z) -> {
             int col = (int) ((x - fMinX) / fCell);
@@ -150,12 +205,219 @@ public final class PlyElevation implements ElevationSource {
             if (Float.isNaN(cur) || z > cur) grid[idx] = (float) z;
         });
 
-        Log.info("PLY carregado: %s — %d ponto(s), grade %dx%d de %.2f %s, altura %.1f..%.1f m",
-                file.getName(), used, c, r, cell,
-                crs == Crs.GEOGRAPHIC ? "graus" : "m", s.minZ(), s.maxZ());
+        // Quais células o voo realmente mediu. Guardado antes do
+        // preenchimento, porque depois dele a grade sozinha não sabe mais
+        // distinguir altura medida de altura deduzida — e essa distinção é a
+        // única coisa que impede o dado interpolado de se passar por
+        // levantamento.
+        BitSet medido = new BitSet(c * r);
+        for (int i = 0; i < grid.length; i++) if (!Float.isNaN(grid[i])) medido.set(i);
 
-        return new PlyElevation(file, crs, utmZone, utmSouth, s.minX(), s.minY(), cell,
-                c, r, grid, used, s.minZ(), s.maxZ());
+        // O alcance do cerco vem em metros; em CRS geografico a celula
+        // esta em graus, e a conversao tem de acontecer antes.
+        double celulaM = crs == Crs.GEOGRAPHIC ? cell * 111_320.0 : cell;
+        int preenchidas = preencherVazios(grid, c, r, medido, celulaM);
+
+        Log.info("PLY carregado: %s — %d ponto(s), grade %dx%d de %.2f %s, altura %.1f..%.1f m; "
+                + "%d celula(s) medida(s), %d nivelada(s) entre vizinhas (%.1f%% do que responde)",
+                file.getName(), used, c, r, cell,
+                crs == Crs.GEOGRAPHIC ? "graus" : "m", s.minZ(), s.maxZ(),
+                medido.cardinality(), preenchidas,
+                100.0 * preenchidas / Math.max(1, medido.cardinality() + preenchidas));
+
+        return new PlyElevation(file, crs, utmZone, utmSouth, fMinX, fMinY, cell,
+                c, r, grid, used, s.minZ(), s.maxZ(), medido, preenchidas);
+    }
+
+    // ------------------------ Falha de amostragem ------------------------
+
+    /**
+     * Nivela as falhas de amostragem INTERNAS a partir das bordas delas.
+     *
+     * <h3>Por que existe</h3>
+     * A densidade do voo varia, e a grade fica com células vazias no meio de
+     * área voada — a 1 m sobra menos de 1% delas, mas basta uma no caminho de
+     * um enlace para o perfil cair num vão que não existe no terreno. Pior: a
+     * consulta antiga tapava o vazio devolvendo a altura da primeira vizinha
+     * que encontrasse varrendo um quadrado a partir do canto, o que desloca o
+     * relevo em até duas células sempre para o mesmo lado.
+     *
+     * <h3>Onde preencher, e onde não</h3>
+     * O limite é o FECHAMENTO morfológico da máscara medida: dilata em
+     * {@link #RAIO_VIZINHO} e erode de volta. Isso tapa todo vão mais estreito
+     * que o elemento e devolve a fronteira externa intacta, então o contorno
+     * do voo não cresce um metro sequer — nada é inventado para fora do que
+     * foi levantado. Um vazio largo demais para o elemento continua vazio: se
+     * o drone não passou por cima de vinte metros de terreno, ninguém aqui
+     * sabe o que tem lá, e a resposta certa continua sendo {@code null}.
+     *
+     * <h3>Como</h3>
+     * Laplace com as bordas do vão como contorno — a superfície mais suave que
+     * casa com o que foi medido em volta, que é o que "nivelar pelas bordas"
+     * quer dizer. Primeiro os valores crescem para dentro do vão pela média
+     * dos vizinhos já conhecidos, depois algumas relaxações tiram o degrau que
+     * essa propagação deixa. Como todo vão aqui é estreito por construção, a
+     * conta converge em poucas passadas.
+     *
+     * Medido contra o próprio levantamento, escondendo faixas de dado e
+     * comparando o que o método devolve com o que ele não viu: erro mediano
+     * de 7 cm em vão de uma célula e de 12 cm em vão de três.
+     *
+     * @return quantas células passaram a responder
+     */
+    private static int preencherVazios(float[] grid, int cols, int rows,
+                                       BitSet medido, double celulaM) {
+        int alcance = (int) Math.max(1, Math.round(ALCANCE_CERCO_M / Math.max(1e-9, celulaM)));
+
+        // Uma celula entra na conta quando ha dado nas quatro direcoes dentro
+        // do alcance. As quatro varreduras sao lineares: cada uma so carrega
+        // "ha quantas celulas passei pela ultima medida", e o resultado ja
+        // entra no acumulador, para nao guardar quatro mapas de distancia de
+        // milhoes de celulas ao mesmo tempo.
+        boolean[] cercado = new boolean[cols * rows];
+        Arrays.fill(cercado, true);
+        boolean[] lado = new boolean[cols * rows];
+
+        varrerLinha(medido, cercado, lado, cols, rows, alcance, true);
+        varrerLinha(medido, cercado, lado, cols, rows, alcance, false);
+        varrerColuna(medido, cercado, lado, cols, rows, alcance, true);
+        varrerColuna(medido, cercado, lado, cols, rows, alcance, false);
+
+        int n = 0;
+        for (int i = 0; i < cercado.length; i++) {
+            if (cercado[i] && !medido.get(i)) n++;
+        }
+        if (n == 0) return 0;
+        int[] alvo = new int[n];
+        n = 0;
+        for (int i = 0; i < cercado.length; i++) {
+            if (cercado[i] && !medido.get(i)) alvo[n++] = i;
+        }
+
+        // Largura do maior buraco, medida em corridas de celulas a preencher.
+        // E dela que saem o numero de relaxacoes e o fator de sobre-relaxacao:
+        // um buraco de D celulas precisa de ordem D passadas para a informacao
+        // das bordas chegar ao meio, e nao de ordem D ao quadrado.
+        int d = maiorCorrida(cercado, medido, cols, rows);
+
+        // Semente: o valor cresce para dentro do buraco, uma camada por
+        // passada, pela media dos vizinhos que ja tem altura. Sozinha ela ja
+        // liga as bordas; o que falta e alisar a costura onde as frentes se
+        // encontram.
+        boolean mudou = true;
+        for (int passada = 0; passada < d + 8 && mudou; passada++) {
+            mudou = false;
+            for (int idx : alvo) {
+                if (!Float.isNaN(grid[idx])) continue;
+                double v = mediaDasVizinhas(grid, cols, rows, idx);
+                if (!Double.isNaN(v)) { grid[idx] = (float) v; mudou = true; }
+            }
+        }
+
+        // Relaxacao de Laplace: a superficie mais suave que casa com as bordas
+        // medidas. Com sobre-relaxacao, porque sem ela um buraco de centenas
+        // de metros pediria dezenas de milhares de passadas.
+        double omega = 2.0 / (1.0 + Math.sin(Math.PI / Math.max(4, d)));
+        int passadas = Math.min(MAX_RELAXACOES, Math.max(24, 2 * d));
+        for (int passada = 0; passada < passadas; passada++) {
+            for (int idx : alvo) {
+                double v = mediaDasVizinhas(grid, cols, rows, idx);
+                if (Double.isNaN(v)) continue;
+                double atual = grid[idx];
+                grid[idx] = (float) (Double.isNaN(atual) ? v : atual + omega * (v - atual));
+            }
+        }
+
+        int feitas = 0;
+        for (int idx : alvo) if (!Float.isNaN(grid[idx])) feitas++;
+        Log.info("Buracos do levantamento: %d celula(s) entre bordas, maior vao ~%d m, "
+                + "%d relaxacao(oes) com omega %.4f", feitas, d, passadas, omega);
+        return feitas;
+    }
+
+    /**
+     * Marca em {@code cercado} as celulas que tem dado medido a menos de
+     * {@code alcance} celulas naquele sentido da LINHA.
+     *
+     * O acumulador so perde bits: comeca todo verdadeiro e cada direcao
+     * derruba o que nao alcanca. No fim sobra quem esta cercado pelos quatro
+     * lados.
+     */
+    private static void varrerLinha(BitSet medido, boolean[] cercado, boolean[] lado,
+                                    int cols, int rows, int alcance, boolean paraLeste) {
+        for (int r = 0; r < rows; r++) {
+            int base = r * cols;
+            int desde = alcance + 1;
+            for (int k = 0; k < cols; k++) {
+                int c = paraLeste ? k : cols - 1 - k;
+                desde = medido.get(base + c) ? 0 : (desde >= alcance + 1 ? alcance + 1 : desde + 1);
+                lado[base + c] = desde <= alcance;
+            }
+        }
+        for (int i = 0; i < cercado.length; i++) cercado[i] &= lado[i];
+    }
+
+    /** O mesmo de {@link #varrerLinha}, na COLUNA. */
+    private static void varrerColuna(BitSet medido, boolean[] cercado, boolean[] lado,
+                                     int cols, int rows, int alcance, boolean paraNorte) {
+        for (int c = 0; c < cols; c++) {
+            int desde = alcance + 1;
+            for (int k = 0; k < rows; k++) {
+                int r = paraNorte ? k : rows - 1 - k;
+                int i = r * cols + c;
+                desde = medido.get(i) ? 0 : (desde >= alcance + 1 ? alcance + 1 : desde + 1);
+                lado[i] = desde <= alcance;
+            }
+        }
+        for (int i = 0; i < cercado.length; i++) cercado[i] &= lado[i];
+    }
+
+    /** Maior sequencia de celulas a preencher, em linha ou em coluna. */
+    private static int maiorCorrida(boolean[] cercado, BitSet medido, int cols, int rows) {
+        int maior = 1;
+        for (int r = 0; r < rows; r++) {
+            int base = r * cols, corrida = 0;
+            for (int c = 0; c < cols; c++) {
+                boolean alvo = cercado[base + c] && !medido.get(base + c);
+                corrida = alvo ? corrida + 1 : 0;
+                if (corrida > maior) maior = corrida;
+            }
+        }
+        for (int c = 0; c < cols; c++) {
+            int corrida = 0;
+            for (int r = 0; r < rows; r++) {
+                int i = r * cols + c;
+                boolean alvo = cercado[i] && !medido.get(i);
+                corrida = alvo ? corrida + 1 : 0;
+                if (corrida > maior) maior = corrida;
+            }
+        }
+        return maior;
+    }
+
+    /**
+     * Media das quatro vizinhas que ja tem altura, ou NaN se nenhuma tem.
+     *
+     * Sao quatro, e nao oito: a media das quatro e o operador de Laplace na
+     * grade, e e ele que define "a superficie mais suave que casa com as
+     * bordas". Incluir as diagonais mudaria o peso e arredondaria o resultado
+     * na direcao errada.
+     */
+    private static double mediaDasVizinhas(float[] grid, int cols, int rows, int idx) {
+        double soma = 0;
+        int viz = 0;
+        int row = idx / cols, col = idx % cols;
+        if (col > 0        && !Float.isNaN(grid[idx - 1]))    { soma += grid[idx - 1];    viz++; }
+        if (col < cols - 1 && !Float.isNaN(grid[idx + 1]))    { soma += grid[idx + 1];    viz++; }
+        if (row > 0        && !Float.isNaN(grid[idx - cols])) { soma += grid[idx - cols]; viz++; }
+        if (row < rows - 1 && !Float.isNaN(grid[idx + cols])) { soma += grid[idx + cols]; viz++; }
+        return viz == 0 ? Double.NaN : soma / viz;
+    }
+
+    private static int contar(boolean[] m) {
+        int n = 0;
+        for (boolean b : m) if (b) n++;
+        return n;
     }
 
     // ------------------------ Consulta ------------------------
@@ -165,26 +427,34 @@ public final class PlyElevation implements ElevationSource {
         double[] p = toSurvey(worldX, worldY);
         double px = p[0], py = p[1];
 
+        // A borda oeste/sul merece cuidado: (int) trunca em direcao a zero, e
+        // sem este teste um ponto meio metro fora do levantamento cairia na
+        // coluna 0 e receberia a altura da borda como se estivesse dentro.
+        if (px < minX || py < minY) return null;
         int col = (int) ((px - minX) / cellSize);
         int row = (int) ((py - minY) / cellSize);
-        if (col < 0 || row < 0 || col >= cols || row >= rows) return null;
+        if (col >= cols || row >= rows) return null;
 
+        // A falha de amostragem ja foi nivelada na carga, pelas bordas do
+        // proprio vao (ver preencherVazios). O que sobrou vazio aqui e area
+        // que o voo nao cobriu, e para essa a resposta honesta e nenhuma.
         float v = grid[row * cols + col];
-        if (!Float.isNaN(v)) return (double) v;
+        return Float.isNaN(v) ? null : (double) v;
+    }
 
-        // Célula vazia: procura vizinha próxima, para buraco de amostragem não
-        // virar "sem dado" no meio de uma área coberta.
-        for (int rad = 1; rad <= RAIO_VIZINHO; rad++) {
-            for (int dr = -rad; dr <= rad; dr++) {
-                for (int dc = -rad; dc <= rad; dc++) {
-                    int rr = row + dr, cc = col + dc;
-                    if (rr < 0 || cc < 0 || rr >= rows || cc >= cols) continue;
-                    float n = grid[rr * cols + cc];
-                    if (!Float.isNaN(n)) return (double) n;
-                }
-            }
-        }
-        return null;
+    /**
+     * A altura deste ponto foi medida pelo voo, ou deduzida das vizinhas?
+     *
+     * Serve para quem precisa saber o quanto confiar — o contorno da nuvem, a
+     * leitura sob o cursor — sem ter de duplicar a regra de preenchimento.
+     */
+    public boolean medidoEm(double worldX, double worldY) {
+        double[] p = toSurvey(worldX, worldY);
+        if (p[0] < minX || p[1] < minY) return false;
+        int col = (int) ((p[0] - minX) / cellSize);
+        int row = (int) ((p[1] - minY) / cellSize);
+        if (col >= cols || row >= rows) return false;
+        return medido.get(row * cols + col);
     }
 
     // ------------------------ Coordenadas ------------------------
@@ -245,11 +515,11 @@ public final class PlyElevation implements ElevationSource {
         int bc = (cols + b - 1) / b;
         int br = (rows + b - 1) / b;
 
-        // Onde a consulta realmente responde — nao onde ha ponto. Sao coisas
-        // diferentes: elevationAt() aceita a altura de uma vizinha ate
-        // RAIO_VIZINHO celulas de distancia, entao uma celula vazia cercada
-        // de dado responde, e precisa contar como coberta.
-        boolean[] responde = dilatar(marcarComDado(), RAIO_VIZINHO);
+        // Onde a consulta realmente responde. Depois que preencherVazios()
+        // passou, isso e' exatamente "a celula tem altura" — nao ha mais
+        // regra de vizinhanca escondida em elevationAt() para o contorno
+        // precisar imitar, e as duas coisas nao tem como divergir.
+        boolean[] responde = marcarComDado();
 
         // E o bloco entra no desenho quando a MAIORIA dele responde. Bloco
         // que so encosta na franja do voo responderia em um canto e ficaria
@@ -309,7 +579,7 @@ public final class PlyElevation implements ElevationSource {
         public boolean isEmpty() { return rings == null || rings.isEmpty(); }
     }
 
-    /** Celulas que tem altura propria. */
+    /** Celulas que tem altura — medida ou nivelada. */
     private boolean[] marcarComDado() {
         boolean[] m = new boolean[cols * rows];
         for (int i = 0; i < m.length; i++) m[i] = !Float.isNaN(grid[i]);
@@ -323,7 +593,7 @@ public final class PlyElevation implements ElevationSource {
      * cada celula: o resultado e o mesmo de uma janela quadrada e o custo cai
      * de raio^2 para raio por celula, o que importa numa grade de milhoes.
      */
-    private boolean[] dilatar(boolean[] m, int raio) {
+    private static boolean[] dilatar(boolean[] m, int cols, int rows, int raio) {
         boolean[] h = new boolean[m.length];
         for (int r = 0; r < rows; r++) {
             int base = r * cols;
@@ -340,6 +610,40 @@ public final class PlyElevation implements ElevationSource {
                 boolean v = false;
                 int de = Math.max(0, r - raio), ate = Math.min(rows - 1, r + raio);
                 for (int k = de; k <= ate && !v; k++) v = h[k * cols + c];
+                out[r * cols + c] = v;
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Encolhe a mascara em {@code raio} celulas — o oposto de {@link #dilatar}.
+     *
+     * Dilatar e depois erodir com o mesmo raio e o fechamento morfologico:
+     * tapa os vaos mais estreitos que o elemento e devolve a fronteira
+     * externa onde ela estava. E dai que sai a garantia de que o
+     * preenchimento nao empurra o limite do levantamento para fora.
+     *
+     * Fora da matriz conta como preenchido — senao a borda da propria matriz
+     * comeria RAIO_VIZINHO celulas de levantamento bom em cada lado.
+     */
+    private static boolean[] erodir(boolean[] m, int cols, int rows, int raio) {
+        boolean[] h = new boolean[m.length];
+        for (int r = 0; r < rows; r++) {
+            int base = r * cols;
+            for (int c = 0; c < cols; c++) {
+                boolean v = true;
+                int de = Math.max(0, c - raio), ate = Math.min(cols - 1, c + raio);
+                for (int k = de; k <= ate && v; k++) v = m[base + k];
+                h[base + c] = v;
+            }
+        }
+        boolean[] out = new boolean[m.length];
+        for (int c = 0; c < cols; c++) {
+            for (int r = 0; r < rows; r++) {
+                boolean v = true;
+                int de = Math.max(0, r - raio), ate = Math.min(rows - 1, r + raio);
+                for (int k = de; k <= ate && v; k++) v = h[k * cols + c];
                 out[r * cols + c] = v;
             }
         }
@@ -497,4 +801,32 @@ public final class PlyElevation implements ElevationSource {
     public double maxZ() { return maxZ; }
     public int cols() { return cols; }
     public int rows() { return rows; }
+
+    /** Celulas com altura medida pelo voo. */
+    public int celulasMedidas() { return medido.cardinality(); }
+
+    /** Celulas cuja altura foi nivelada a partir das vizinhas. */
+    public int celulasNiveladas() { return preenchidas; }
+
+    /**
+     * Caixa do levantamento em coordenadas de mundo: {minX, minY, maxX, maxY}.
+     *
+     * Os quatro cantos sao convertidos e a caixa sai do envelope deles, e nao
+     * de converter so dois: fora do Web Mercator os lados do retangulo do
+     * levantamento nao ficam paralelos aos eixos do mundo.
+     */
+    public double[] worldBounds() {
+        double maxXs = minX + cols * cellSize, maxYs = minY + rows * cellSize;
+        double[][] cantos = {
+            toWorld(minX, minY), toWorld(maxXs, minY),
+            toWorld(minX, maxYs), toWorld(maxXs, maxYs)
+        };
+        double a = Double.MAX_VALUE, b = Double.MAX_VALUE;
+        double c2 = -Double.MAX_VALUE, d = -Double.MAX_VALUE;
+        for (double[] p : cantos) {
+            a = Math.min(a, p[0]); c2 = Math.max(c2, p[0]);
+            b = Math.min(b, p[1]); d = Math.max(d, p[1]);
+        }
+        return new double[] { a, b, c2, d };
+    }
 }

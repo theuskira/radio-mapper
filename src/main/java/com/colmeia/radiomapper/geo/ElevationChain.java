@@ -25,9 +25,41 @@ public final class ElevationChain implements ElevationSource {
     private ElevationSource geotiff;
     private ElevationSource terrain;
 
-    public void setPly(ElevationSource s) { this.ply = s; announce("PLY", s); }
+    /**
+     * O relevo de reserva ja acertado com o levantamento, quando ha os dois.
+     *
+     * Fica separado de {@link #terrain} de proposito: o original continua
+     * intacto, e basta soltar esta referencia para a cadeia voltar a usar a
+     * reserva como ela e'.
+     */
+    private ElevationSource costurado;
+
+    public void setPly(ElevationSource s) {
+        this.ply = s;
+        // Trocar o levantamento invalida a costura: ela foi medida contra
+        // o anterior, e manter seria deslocar a reserva pelo vies de uma
+        // nuvem que nao esta mais aqui.
+        this.costurado = null;
+        announce("PLY", s);
+    }
     public void setGeotiff(ElevationSource s) { this.geotiff = s; announce("GeoTIFF", s); }
-    public void setTerrain(ElevationSource s) { this.terrain = s; }
+    public void setTerrain(ElevationSource s) { this.terrain = s; this.costurado = null; }
+
+    /**
+     * Costura o relevo de reserva na altura do levantamento.
+     *
+     * Sem isto a cadeia troca de fonte no meio do terreno e o degrau entre
+     * elas vira poco nos vaos da nuvem. Ver {@link Costura}.
+     *
+     * @param bounds area do levantamento, em coordenadas de mundo
+     */
+    public void costurar(double[] bounds) {
+        costurado = (ply == null || terrain == null) ? null
+                : Costura.tecer(ply, terrain, bounds);
+    }
+
+    /** Desfaz a costura: a reserva volta a valer como ela e'. */
+    public void descosturar() { costurado = null; }
 
     public ElevationSource ply() { return ply; }
     public ElevationSource geotiff() { return geotiff; }
@@ -44,7 +76,8 @@ public final class ElevationChain implements ElevationSource {
         List<ElevationSource> out = new ArrayList<>(3);
         if (ply != null) out.add(ply);
         if (geotiff != null) out.add(geotiff);
-        if (terrain != null) out.add(terrain);
+        if (costurado != null) out.add(costurado);
+        else if (terrain != null) out.add(terrain);
         return out;
     }
 

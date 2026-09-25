@@ -1499,6 +1499,11 @@ public class MapPane extends Pane {
      * refazer a conta lá daria outro resultado se algum parâmetro tivesse
      * mudado, e as duas telas passariam a discordar sobre onde há sinal.
      */
+    /** O lobo deste radio foi desenhado com relevo? Falso tambem quando nao ha lobo. */
+    public boolean simulatedWithTerrain(String radioId) {
+        return !simSemRelevo.contains(radioId);
+    }
+
     public com.colmeia.radiomapper.rf.BeamCoverage.Cobertura simulatedCoverage(String radioId) {
         return simBeams.get(radioId);
     }
